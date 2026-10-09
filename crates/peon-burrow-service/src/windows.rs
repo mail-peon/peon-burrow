@@ -674,9 +674,16 @@ impl ServiceHost for WindowsSystemHost {
             [
                 "create".to_owned(),
                 opts.name.clone(),
-                format!("binPath= {bin_path}"),
-                format!("start= {start_type}"),
-                format!("DisplayName= {}", opts.name),
+                // ⚠️ `sc` 要求**选项名与值分成两个参数**（`sc create x binPath= "…" start= auto`）。
+                // 把 `"start= auto"` 当成一个参数传过去，它会报「无效 start= 参数」（退出码 1639，
+                // 真机踩过）。按渲染后的命令行写断言是看不出来的：`display_line()` 把两种拼法
+                // 拼成同一行，所以 `assert!(line.contains("start= auto"))` 对两种写法都成立。
+                "binPath=".to_owned(),
+                bin_path,
+                "start=".to_owned(),
+                start_type.to_owned(),
+                "DisplayName=".to_owned(),
+                opts.name.clone(),
             ],
             "创建系统服务",
         );
@@ -770,7 +777,9 @@ impl ServiceHost for WindowsSystemHost {
             [
                 "config".to_owned(),
                 self.name.clone(),
-                format!("start= {start_type}"),
+                // 同 `create`：选项名与值必须分开传（否则 1639「无效 start= 参数」）
+                "start=".to_owned(),
+                start_type.to_owned(),
             ],
             if on {
                 "开启系统服务自启"
@@ -927,7 +936,7 @@ pub fn describe_run_mode(mode: RunMode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runner::FakeRunner;
+    use crate::runner::{CommandSpec, FakeRunner, Mutation};
 
     fn sample_opts() -> InstallOptions {
         let mut opts = InstallOptions::new(
@@ -1291,6 +1300,121 @@ SERVICE_NAME: peon-burrow
             "自检要读回来：{}",
             lines[3]
         );
+    }
+
+    /// 检查每一条 `sc` 命令的**参数形状**：选项名与值必须是相邻的两个参数。
+    ///
+    /// 真机踩过：`sc create … "start= auto"` → 退出码 1639「无效 start= 参数」。
+    /// 这条只能查 argv —— `display_line()` 把 `["start= auto"]` 和 `["start=", "auto"]`
+    /// 渲染成**完全一样**的一行，所以按命令行写断言是抓不住的。
+    fn assert_sc_options_are_separate(commands: &[CommandSpec]) {
+        const OPTIONS: [&str; 12] = [
+            "type=",
+            "start=",
+            "error=",
+            "binPath=",
+            "group=",
+            "tag=",
+            "depend=",
+            "obj=",
+            "DisplayName=",
+            "password=",
+            "reset=",
+            "actions=",
+        ];
+        for command in commands {
+            if command.program != "sc" {
+                continue;
+            }
+            for arg in &command.args {
+                for option in OPTIONS {
+                    if let Some(rest) = arg.strip_prefix(option) {
+                        assert!(
+                            rest.is_empty(),
+                            "`{option}` 必须与它的值分成两个参数，现在是 {arg:?}（{}）",
+                            command.purpose
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// 取这次测试里跑过的所有命令。
+    fn commands_of(runner: &FakeRunner) -> Vec<CommandSpec> {
+        runner
+            .mutations()
+            .all()
+            .into_iter()
+            .filter_map(|mutation| match mutation {
+                Mutation::Run(spec) => Some(spec),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sc_options_are_passed_as_separate_arguments() {
+        let runner = FakeRunner::new()
+            .expect("") // sc create
+            .expect("") // sc description
+            .expect("") // sc failure
+            .expect(SCFAILURE_FIXTURE); // sc qfailure
+        let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
+        let mut opts = sample_opts();
+        opts.level = ServiceLevel::System;
+        opts.autostart = Autostart::Boot;
+        host.install(&opts).expect("install");
+
+        let commands = commands_of(&runner);
+        assert_sc_options_are_separate(&commands);
+
+        // 正向断言：`start=` 与 `auto` 是相邻的两个参数
+        let create = commands.first().expect("sc create");
+        let index = create
+            .args
+            .iter()
+            .position(|arg| arg == "start=")
+            .expect("create 里要有 start=");
+        assert_eq!(create.args.get(index + 1).map(String::as_str), Some("auto"));
+        // binPath 的值里带空格（可执行文件路径 + 参数），它**必须**是一个参数
+        let binpath = create
+            .args
+            .iter()
+            .position(|arg| arg == "binPath=")
+            .expect("create 里要有 binPath=");
+        assert!(
+            create
+                .args
+                .get(binpath + 1)
+                .is_some_and(|value| value.contains(' ')),
+            "binPath 的值是一个参数（含空格）：{:?}",
+            create.args
+        );
+    }
+
+    #[test]
+    fn sc_config_for_autostart_uses_separate_arguments_too() {
+        // 同一个 bug 的另一处：系统服务的自启开关走 `sc config start= auto|demand`
+        for on in [true, false] {
+            let runner = FakeRunner::new().expect("");
+            let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
+            host.set_autostart(on).expect("set_autostart");
+
+            let commands = commands_of(&runner);
+            assert_sc_options_are_separate(&commands);
+            let config = commands.first().expect("sc config");
+            let expected = if on { "auto" } else { "demand" };
+            let index = config
+                .args
+                .iter()
+                .position(|arg| arg == "start=")
+                .expect("config 里要有 start=");
+            assert_eq!(
+                config.args.get(index + 1).map(String::as_str),
+                Some(expected)
+            );
+        }
     }
 
     #[test]

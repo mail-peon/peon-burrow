@@ -3,6 +3,8 @@
 > `mail-peon` 浏览器扩展的 **IMAP 中继核心**（苦工的地洞）：一条 `WebSocket ↔ TCP/TLS` 的字节隧道 +
 > 替扩展挂 `IDLE` 的常驻监听，做成**可自启的系统服务**，自带控制面与自更新。
 
+![peon-burrow 概念图：替扩展挂 IMAP 长连接的中继](.github/images/burrow.png)
+
 浏览器扩展拿不到裸 TCP（MV3 的 Service Worker 只有 `fetch` / `WebSocket`），
 所以 IMAP 必须借一条本机隧道；`IDLE` 长连接也只能由隧道进程替扩展挂着。
 完整论证在 `mail-peon` 仓库：

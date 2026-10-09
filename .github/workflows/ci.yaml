@@ -98,6 +98,14 @@ jobs:
             echo "::error::L3 违规：peon-burrow-update 依赖了其它上层 crate"; fail=1
           fi
 
+          # 版本脚本必须真的能跑（「改了 workspace 版本、漏了内部依赖版本」是最常见的发包事故：
+          # 表现是后面几个包报 no matching package，看起来像网络问题）
+          ./scripts/bump-version.sh 9.9.9 --dry-run > /dev/null
+          ./scripts/bump-version.sh 0.0.0 --dry-run > /dev/null
+          if ! git diff --exit-code -- Cargo.toml > /dev/null; then
+            echo "::error::bump-version.sh 在 --dry-run 下改动了 Cargo.toml"; fail=1
+          fi
+
           # L5：bin 必须够薄
           lines=$(wc -l < crates/peon-burrow/src/main.rs)
           if [ "$lines" -gt 60 ]; then

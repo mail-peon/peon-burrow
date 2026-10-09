@@ -586,9 +586,47 @@ async fn service_command(
         }
 
         ServiceCommand::Uninstall => {
-            let host = peon_burrow_service::native_for(default_level);
-            host.stop().ok();
-            host.uninstall().map_err(service_error)?;
+            // ⚠️ **两级都卸**：用户级任务与系统服务可以同时存在（先装用户级、后装系统级，
+            // 或者反过来的半成品）。只卸「有效那一级」的话，用户点一次卸载只掉一个，
+            // 再看状态还是「已安装」——表现就是「卸载不掉，也没报错」（真机踩过）。
+            let levels = [
+                default_level,
+                match default_level {
+                    peon_burrow_ipc_types::ServiceLevel::User => {
+                        peon_burrow_ipc_types::ServiceLevel::System
+                    }
+                    peon_burrow_ipc_types::ServiceLevel::System => {
+                        peon_burrow_ipc_types::ServiceLevel::User
+                    }
+                },
+            ];
+
+            let mut removed = false;
+            let mut last_error = None;
+            for level in levels {
+                let host = peon_burrow_service::native_for(level);
+                // 没装的那一级：`uninstall` 会报「未安装」，这不是失败
+                if host
+                    .status()
+                    .map(|status| status.installed)
+                    .unwrap_or(false)
+                {
+                    host.stop().ok();
+                    match host.uninstall() {
+                        Ok(()) => removed = true,
+                        Err(error) => last_error = Some(error),
+                    }
+                }
+            }
+
+            // 两级都没装、也没出错：幂等成功（用户重复点卸载不该报错）
+            if let Some(error) = last_error {
+                if !removed {
+                    return Err(service_error(error));
+                }
+                tracing::warn!(%error, "一级卸载失败，另一级已卸掉");
+            }
+
             if json {
                 print_json(&serde_json::json!({ "installed": false }));
             } else {

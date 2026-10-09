@@ -152,3 +152,29 @@
 | Q5 | Windows 用户级自启的 `Hidden` XML 最简写法 | 落地时验证；不可行则接受一次黑框并记入已知问题 | `peon-burrow-service` |
 | Q6 | `max_connections` 默认值 | 32 | `peon-burrow-core` |
 | Q7 | 服务账号（Windows `LocalSystem` vs `LocalService`） | `LocalSystem`（要写自己的目录） | `peon-burrow-service` |
+---
+
+## 落地状态（2026-10-09）
+
+> 实现已完成到 S13；S14 只剩**人工验收**（真机 UAC / 重启 / 崩溃恢复 / 真邮箱）。
+> 与设计文档的逐条偏差见 [`decisions/adr-0010-implementation-revisions.md`](./decisions/adr-0010-implementation-revisions.md)。
+
+| 阶段 | 状态 | 证据 |
+| --- | --- | --- |
+| S0 workspace 骨架（9 包） | 完成 | 布局守卫 L1/L2/L3/L5 全过 |
+| S1 `protocol`（关闭码 / 目标 / 策略 / watch 报文） | 完成 | 36 单测 |
+| S2 `core` 错误与策略 | 完成 | 10 单测 |
+| S3 `transport`（TCP/TLS 建连唯一实现） | 完成 | SNI、证书错误映射、注入信任根 |
+| S4 `dispatch` / `tunnel` / `state` / `server` | 完成 | 11 条真 TCP 端到端 |
+| S5 `watch`（IMAP IDLE 状态机） | 完成 | 6 条端到端（未标记问候、致命不重连） |
+| S6 `testkit`（rcgen 证书 / 脚本化 IMAP / 回声） | 完成 | 3 单测，被 core 复用 |
+| S7 `ipc-types` + `ipc`（命名管道 / Unix socket / TCP 退路） | 完成 | 15 + 7 单测（含 5 次失败锁定） |
+| S8 `service`（三平台 + `probe_port` + 执行缝） | 完成 | 56 测（零改机器）+ 三平台 `--target` clippy |
+| S9 `update`（清单 / 四道闸 / 替换运行中的 exe） | 完成 | 65 测（sha256、签名、冒烟、回滚） |
+| S10 产品层（config / doctor / control / exit / paths） | 完成 | 三层合并与组合规则全测 |
+| S11 CLI + `run` + 13 行 `main` | 完成 | 真二进制：起服务 → status → trace → stop（退出码 0） |
+| S12 示例（4 个） | 完成 | `--example watch_protocol` 输出与协议文档逐字一致 |
+| S13 CI（3 平台 × lint/test/doc + MSRV + 守卫 + 打包 + 发版） | 完成 | `.github/workflows/{ci,assets,release}.yaml` |
+| S14 发版与人工验收 | 待办 | 需要 tag、crates.io token、真邮箱与重启/崩溃恢复演练 |
+
+合计 **299 个测试**通过（含 10 条跨仓库契约测试）。

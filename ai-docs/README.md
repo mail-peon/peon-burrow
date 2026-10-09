@@ -102,3 +102,4 @@
 | P6 | 删掉 TS 实现（**必须在扩展切换默认端口之后**） | ⬜ |
 
 详见 [`03-roadmap.md`](./03-roadmap.md)。
+- [`decisions/adr-0010-implementation-revisions.md`](./decisions/adr-0010-implementation-revisions.md) —— **落地时的偏差总表**（优先于被点名段落）

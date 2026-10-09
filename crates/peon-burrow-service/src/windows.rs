@@ -468,7 +468,11 @@ pub fn inspect_autostart(xml: &str) -> Autostart {
         return Autostart::Off;
     }
     match xml_section(xml, "LogonTrigger") {
-        Some(trigger) if xml_bool(trigger, "Enabled") == Some(true) => Autostart::Logon,
+        // ⚠️ `<Enabled>` **缺省即 true**：任务计划程序不会写出这个元素。
+        // 实证：装好用户级自启后导出的 XML 里，`<LogonTrigger>` 只有一个 `<UserId>`。
+        // 要求它必须是 `Some(true)`，会把「登录时启动」误报成「已关闭」——而界面正靠这个值
+        // 显示开关状态，用户会以为自启没配上（真机踩过）。
+        Some(trigger) if xml_bool(trigger, "Enabled") != Some(false) => Autostart::Logon,
         _ => Autostart::Off,
     }
 }
@@ -1000,6 +1004,41 @@ SERVICE_NAME: peon-burrow
             Autostart::Logon,
             "默认（登录自启）要能被读回成 Logon"
         );
+    }
+
+    #[test]
+    fn autostart_is_read_from_real_task_scheduler_xml() {
+        // 实证（`Export-ScheduledTask` 导出我们装好的任务）：`<LogonTrigger>` 里**只有**
+        // `<UserId>`，没有 `<Enabled>` —— 缺省即启用。只认 `Some(true)` 会把登录自启
+        // 误报成「已关闭」，而这个值正是界面显示开关状态的依据。
+        let xml = r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <LogonTrigger>
+      <UserId>DESKTOP-8I3HR5D\imba97</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+  </Settings>
+</Task>"#;
+        assert_eq!(inspect_autostart(xml), Autostart::Logon);
+    }
+
+    #[test]
+    fn an_explicitly_disabled_logon_trigger_is_off() {
+        // 用户手工在「任务计划程序」里禁用触发器时，XML **会**写出这一行
+        let xml = "<Triggers><LogonTrigger><UserId>x</UserId><Enabled>false</Enabled></LogonTrigger></Triggers>";
+        assert_eq!(inspect_autostart(xml), Autostart::Off);
+    }
+
+    #[test]
+    fn a_disabled_task_is_off_even_with_a_logon_trigger() {
+        // 任务被整体停用（`schtasks /Change /DISABLE`）时，settings 里会有 Enabled=false
+        let xml = "<Triggers><LogonTrigger><UserId>x</UserId></LogonTrigger></Triggers>\
+                   <Settings><Enabled>false</Enabled></Settings>";
+        assert_eq!(inspect_autostart(xml), Autostart::Off);
     }
 
     #[test]

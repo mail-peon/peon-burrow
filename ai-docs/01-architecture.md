@@ -83,12 +83,15 @@ burrow run   # 直接前台常驻，用户自己拿别的方式保活（比如 W
 ├── ai-docs/                        # 本仓库文档（含协议、ADR）
 ├── .github/workflows/
 └── crates/
-    ├── peon-burrow-core/                 # 库：隧道 + watch 状态机 + 策略（纯逻辑，可单测）
-    ├── peon-burrow-config/               # 库：配置文件 + CLI + 环境变量三层合并、校验
-    ├── peon-burrow-ipc/                  # 库：控制面协议（请求/响应类型 + 编解码）★被桌面端复用
-    ├── peon-burrow-service/              # 库：服务宿主与注册（Windows SCM / launchd / systemd / 用户级自启）
-    ├── peon-burrow-update/               # 库：自更新（检查、下载、校验、替换、重启）
-    └── burrow/            # bin：CLI 入口 + 服务入口 + 控制面服务端 + 日志初始化
+    ├── peon-burrow-protocol/             # 稳定：线上协议（目标解析 · watch 报文 · 关闭码）无 IO
+    ├── peon-burrow-core/                 # 稳定：引擎（隧道 + 策略 + RelayState）；feature imap-watch 默认关
+    ├── peon-burrow-ipc-types/            # 稳定：控制面**类型**（只依赖 serde）
+    ├── peon-burrow-ipc/                  # 稳定：控制面**传输** + 客户端/服务端
+    ├── peon-burrow-service/              # 稳定：跨平台服务托管（与中继无关，可单独用）
+    ├── peon-burrow-update/               # 稳定：自更新（与中继无关，可单独用）
+    ├── peon-burrow/                      # 产品：lib（config/doctor/control/exit/run）+ [[bin]] burrow
+    ├── peon-burrow-testkit/              # 内部：echo / mock IMAP / harness（publish = false）
+    └── peon-burrow-examples/             # 内部：examples/ 里的 7 个接入示例（publish = false）
 ```
 
 ⚠️ **没有 `rust-toolchain.toml`**，这是刻意的（沿用 `cargo-bumpp` / `harbor` 的约定）：
@@ -98,15 +101,18 @@ burrow run   # 直接前台常驻，用户自己拿别的方式保活（比如 W
 依赖方向（不许反向）：
 
 ```
-burrow ──▶ peon-burrow-service ──▶ peon-burrow-config
-      │                  │
-      │                  └──▶ peon-burrow-ipc
-      ├──▶ peon-burrow-update ──▶ peon-burrow-config
-      └──▶ peon-burrow-core ──▶ peon-burrow-ipc（只用「状态上报」那几个类型）
+peon-burrow（lib + bin `burrow`）
+├── peon-burrow-core ──▶ peon-burrow-protocol        ← 引擎只依赖协议
+├── peon-burrow-ipc  ──▶ peon-burrow-ipc-types       ← 控制面传输 vs 类型
+├── peon-burrow-service                              ← 与中继无关
+└── peon-burrow-update                               ← 与中继无关
+
+布局铁律（违反就是返工，详见 modules.md 开头）：
+  L1 稳定层不许依赖产品层 · L2 类型与传输分开 · L3 默认值只在 core · L4 注入而非全局 · L5 bin 只有 40 行
 ```
 
 `peon-burrow-core` **不依赖**配置来源、不依赖 `std::env`、不读文件：它的输入是一个
-`RelayOptions` 值，输出是 `RelayHandle`（`start()` / `stop()` / `local_addr()`）。
+`RelayOptions` 值，输出是 `RelayServer`（`start()` / `stop()` / `local_addr()` / `state()`），默认值也只在 core 定义（L3）。
 这条纪律是从 TS 版学来的：TS 版把 `PORT` / `ALLOWED_HOSTS` 都写成了模块级常量
 （`imap-relay.ts:90-140`），导致**没法在一个进程里跑两个实例**，
 测试只能 `spawn` 子进程 + `sleep(1200)` 等它起来（`imap-relay.test.ts:122`）——
@@ -122,7 +128,7 @@ Rust 版要能 `#[tokio::test]` 里直接起两个实例。
 ├── package.json / vite.config.*    # 前端（轻量，见该仓库 ai-docs）
 ├── src/                            # 前端：状态卡片 + 5 个操作按钮
 ├── src-tauri/
-│   ├── Cargo.toml                  # peon-burrow-ipc 通过 git 依赖钉到 peon-burrow 的某个 tag
+│   ├── Cargo.toml                  # 首次发布前：git 依赖钉 tag；发布后：peon-burrow-ipc = "0.1" 版本依赖
 │   ├── tauri.conf.json             # bundle 目标、externalBin(sidecar)、identifier
 │   ├── capabilities/               # Tauri 2 权限声明
 │   ├── binaries/                   # 打包时放进来的 core 二进制（不进 git）
@@ -143,7 +149,7 @@ Rust 版要能 `#[tokio::test]` 里直接起两个实例。
 
 **跨仓库的类型共享**（两仓库拆分带来的唯一硬问题）：见
 [adr-0001 § 决策 4](./decisions/adr-0001-two-repos.md) ——
-`peon-burrow-ipc` 用 **git 依赖 + tag 钉版**，而不是复制一份类型。
+类型用 **`peon-burrow-ipc-types`**（发布后是版本依赖，发布前是 git 依赖钉 tag），而不是复制一份类型 —— 见 [`adr-0009`](./decisions/adr-0009-crates-io-publishing.md)。
 
 ---
 
@@ -205,9 +211,11 @@ Rust 版要能 `#[tokio::test]` 里直接起两个实例。
 | Windows | 命名管道 | `\\.\pipe\peon-burrow-<user>`（用户级）/ `\\.\pipe\peon-burrow-system`（系统服务） |
 | macOS / Linux | Unix domain socket | 用户级：`$XDG_RUNTIME_DIR/peon-burrow.sock` 或 `~/Library/Application Support/peon-burrow/relay.sock`；系统服务：`/run/peon-burrow.sock` |
 
-- 全部在 `peon-burrow-ipc` 里定义（`Request` / `Response` 枚举 + serde），
+- **类型**在 `peon-burrow-ipc-types` 里定义（`Request` / `Response` / `ServiceStatus`），**传输**在 `peon-burrow-ipc`：
   GUI 与 CLI 共用同一份类型 —— 手写一份镜像类型必然漂移。
 - 协议：一行 JSON 请求 → 一行 JSON 响应（`\n` 分隔），连接即断。无长连接、无推送。
+- **状态有两个权威来源**：进程内状态（`RelayState`）与**服务注册状态**（`ServiceStatus`）；`status` 返回两者（`StatusReport`），
+  GUI 靠它能区分「未安装 / 已安装未运行 / 前台运行 / 运行中」四种组合。
 - 鉴权：socket 文件权限 0600（Unix）+ 随机 token（启动时写到只有当前用户可读的文件里）。
 
 **⚠️ 系统服务模式的例外（保留一条 TCP 退路）**：
@@ -249,6 +257,8 @@ TCP 退路的代价是「多一个监听端口」，但它是**内核分配的�
 | I8 | 凭据永不进日志（除非显式开 trace 且二次确认） | 泄露邮箱授权码 |
 | I9 | 服务模式没有 TTY 依赖 | 服务在无终端环境下挂死或被杀 |
 | I10 | 自更新的产物必须验签/校验和 | 一个能看到邮箱密码的进程被投毒 |
+| I11 | core 内禁止 `std::sync::Mutex`；**每个 `await` 必须有超时或取消源** | 锁跨 `await`、无取消源的读循环 → 关停卡住、偶发不退出，事后改造代价极高 |
+| I12 | `Paths` / 时钟 / 进程探测一律**注入**，不许直接调 `directories` | 测试只能污染真实用户目录 → 必然大重构 |
 
 ---
 
@@ -302,7 +312,7 @@ TCP 退路的代价是「多一个监听端口」，但它是**内核分配的�
 | `peon-hall_<ver>_x64.dmg` / `_aarch64.dmg` | mac |
 | `peon-hall_<ver>_amd64.AppImage` / `.deb` | linux |
 
-**版本绑定规则**：桌面端发版时从 **peon-burrow 仓库**下载指定 tag 的二进制
+**版本绑定规则**：桌面端发版时从 **peon-burrow 仓库的 Release** 下载指定 tag 的二进制（crates.io 不提供预编译产物）
 （默认取 core 最近一个稳定 release，可用 workflow 输入 `core_ref` 钉死），
 放进 `src-tauri/binaries/` 供 `externalBin` 打包；同时把该 core 版本写进
 桌面端的 release notes 与安装包元数据 —— 避免出现「GUI 与 core 版本不匹配」这种没法复现的现场。
@@ -311,9 +321,17 @@ TCP 退路的代价是「多一个监听端口」，但它是**内核分配的�
 
 ---
 
+## 7.3 发布到 crates.io
+
+7 个 crate 发布（`testkit` / `examples` 不发），顺序与编排见
+[`adr-0009`](./decisions/adr-0009-crates-io-publishing.md)：`protocol → core → ipc-types → ipc → service → update → peon-burrow`。
+用户安装：`cargo install peon-burrow` → `burrow`（binstall 元数据见 [`modules.md § 7`](./modules.md)）。
+
+---
+
 ## 8. 版本协商（计划）
 
-watch 请求目前**没有**版本字段（TS 版如此）。计划：扩展在 `__watch:1` 请求里加
+常量 `WATCH_PROTOCOL_VERSION` 定义在 `peon-burrow-protocol`（与控制面的 `IPC_PROTOCOL_VERSION` 分开命名）。watch 请求目前**没有**版本字段（TS 版如此）。计划：扩展在 `__watch:1` 请求里加
 `clientVersion` / `protocol: 2`，中继在 `state:"watching"` 里回 `relayVersion` / `protocol`。
 
 - **向后兼容**：中继把「缺少 `protocol`」视为 `1`，行为与 TS 版完全一致；

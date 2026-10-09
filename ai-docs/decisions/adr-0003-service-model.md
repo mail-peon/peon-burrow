@@ -69,7 +69,7 @@
 
 ### 4. Q4：自更新后的重启，交给调度器
 
-**不让服务自己启动自己**：更新完成后以**非零退出码**结束，
+**不让服务自己启动自己**：更新完成后以**非零退出码**（`ExitCode::RestartRequested = 5`）结束，
 由 SCM / systemd / launchd / 任务计划程序把它拉起来（完整模型见
 [`design/update-flow.md § 6`](../design/update-flow.md)）。
 这样权限需求最小（不需要 `sc start` 那种提权调用），语义也最清楚。
@@ -99,6 +99,24 @@
 最后一行值得强调：**系统服务模式下，自更新不需要再弹一次 UAC** ——
 服务自己的身份就有权限替换自己的文件。
 
+### 7. 单入口二进制（不是 GUI 子系统，也不是双 bin）
+
+**一个控制台子系统二进制**同时承担 CLI、服务入口与控制面服务端；**不为服务再构建一份 GUI 子系统二进制**。
+
+| 选择 | 理由 |
+| --- | --- |
+| 一个 bin | 自更新只替换**一个文件**；桌面端 `externalBin` 只有一个；SCM 与 CLI 共用同一入口（`windows-service` 的 dispatcher 跑在独立线程上） |
+| Windows 用户级自启走**任务计划程序 + `Hidden`** | 避免控制台程序在登录时弹黑框（`HKCU\…\Run` 会弹）；`Hidden` 需要 XML 而不是命令行开关 |
+| **不做** GUI 子系统（`windows_subsystem = "windows"`） | 那会让 `burrow doctor` 在终端里没有任何输出，还得额外做 `AttachConsole` —— 复杂度换不到收益 |
+
+**代价**：服务态没有 stdout（日志必须落盘 —— 已在 [`design/logging-and-diagnostics.md`](../design/logging-and-diagnostics.md) 设计）。
+
+> 这条是**定论**（布局评审 丁1）：实现时不要再纠结「要不要为服务单独出一个 bin」。
+
+### 8. 重启策略是一个类型，不是散落的 if
+
+`RestartStrategy { ScmFailureActions | ScheduledTask | Systemd | Launchd | None }` 定义在 `peon-burrow-service`；
+`install` 时写入、`doctor` 时自检、`relay-update` 时读取。**update 不关心平台细节**（布局评审 丁2）。
 ## 后果
 
 ### 好的

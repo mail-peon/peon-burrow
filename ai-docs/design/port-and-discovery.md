@@ -164,6 +164,9 @@ burrow run --force-port        # 找到占用者 → 打印是谁 → 结束它 
 
 ### 5.4 端口探测命令
 
+> 探测的**唯一实现**是 `peon-burrow-service::probe_port()`（返回 `PortStatus { free, owner_pid, owner_name, is_self }`），
+> `run` / `doctor` / GUI 都调它 —— 不许各自解析 `netstat` / `lsof`（`is_self` 需要控制面握手，属服务层知识）。
+
 `doctor --port` 输出（三平台统一格式）：
 
 ```

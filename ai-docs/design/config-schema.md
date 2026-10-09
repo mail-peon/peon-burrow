@@ -27,6 +27,12 @@ TOML。路径可用 `--config <path>` 覆盖；默认位置：
 | macOS | `~/Library/Application Support/peon-burrow/relay.toml` |
 | Linux | `~/.config/peon-burrow/relay.toml` |
 
+> **默认值的唯一来源是 `peon-burrow-core`**（L3）：下面 TOML 里出现的值只是「核心默认值」的展示 ——
+> 配置结构里每个字段都是 `Option<T>`，缺省即落到 core 的 `RelayOptions::default()`。**改默认值只改一处。**
+>
+> ⚠️ 路径来自 **`Paths`（注入值，L4）**：只有 `Paths::discover()` 允许碰 `directories`，
+> 测试用 `Paths::for_test(tempdir)` —— 别让任何模块直接调 `ProjectDirs`。
+
 完整 schema（含默认值）：
 
 ```toml
@@ -95,6 +101,9 @@ enabled = true
 
 ### 2.1 校验规则
 
+> 校验属于 **`peon-burrow` 的 `config` 模块**（产品层，组合规则）；`peon-burrow-core` 只做**运行期**的目标级检查
+> （`TargetResolve::Rejected`）。两处各写一半是这次评审特意消掉的重复（乙2）。
+
 | 规则 | 违反时 |
 | --- | --- |
 | `port` ∈ 0..=65535（`0` = 内核分配，仅测试/前台） | 退出码 `2`，指出字段与取值 |
@@ -154,6 +163,9 @@ burrow <命令>
   version
   completion <shell>
 ```
+
+退出码是 **`peon_burrow::ExitCode`** 枚举（唯一来源，见 `modules.md § 7`）——
+`main` 与各层模块**都不许**硬编码数字；自更新完成后返回 `RestartRequested = 5`。
 
 退出码（GUI 与脚本依赖它区分失败原因）：
 

@@ -1,7 +1,7 @@
 # ADR-0004 · 默认端口 41316，且绝不静默换端口
 
 - **状态**：已采纳
-- **影响面**：`peon-burrow-config`、端口占用处理、发现文件、与 `mail-peon` 扩展的联动
+- **影响面**：`peon-burrow`（产品层的 `config` 模块）、端口占用处理、发现文件、与 `mail-peon` 扩展的联动
 - **完整设计**：[`design/port-and-discovery.md`](../design/port-and-discovery.md)
 
 ---

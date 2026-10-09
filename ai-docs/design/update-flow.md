@@ -101,6 +101,11 @@ HTTPS(GitHub/镜像) ──▶ latest.json ──▶ sha256(资产) ──▶ �
 
 ## 4. 应用（apply）
 
+> 输入是一个 **`UpdateContext`**（由 `peon-burrow` 组装）：`install_dir` / `restart: RestartStrategy` /
+> `channel` / `base_url` / `proxy` / `require_signature` / `pubkeys`。
+> **update 不自己去问配置或服务** —— 安装目录只有 `service` 知道（用户级与系统级不同路径），
+> 重启策略有 4 种组合；依赖倒置之后 update 可以用假 context 单测（丁2）。
+
 ```
 ① 下载到 <data-dir>/update/<version>/<asset>    （临时目录，失败即删）
 ② 校验 size → sha256 → 签名（配置要求时缺失 = 失败）
@@ -169,8 +174,8 @@ Unix 上 `exec`（PID 不变）。任何「等旧 PID 消失」的辅助进程�
 
 | 平台 / 模式 | 怎么让它「失败退出」 | 重启由谁做 |
 | --- | --- | --- |
-| Windows 系统服务 | `set_service_status(Stopped, exit_code = 4, wait_hint)` | SCM 的 failure actions（安装时配置：重启 5s、重置周期 86400s、后续 2 次各 5s/10s） |
-| 任务计划程序（用户级默认） | 退出码 4 | 任务的「失败后重新启动」设置（`RestartOnFailure`）——若无此设置，则退化为「下次登录才起」（**必须配置**，写进验收） |
+| Windows 系统服务 | `set_service_status(Stopped, exit_code = 5（`ExitCode::RestartRequested`）, wait_hint)` | SCM 的 failure actions（安装时配置：重启 5s、重置周期 86400s、后续 2 次各 5s/10s） |
+| 任务计划程序（用户级默认） | 退出码 5（`ExitCode::RestartRequested`） | 任务的「失败后重新启动」设置（`RestartOnFailure`）——若无此设置，则退化为「下次登录才起」（**必须配置**，写进验收） |
 | systemd | `exit(4)` | `Restart=always` + `RestartSec=2` |
 | launchd | `exit(4)` | `KeepAlive = { SuccessfulExit = false }`（只在非零退出时重启） |
 

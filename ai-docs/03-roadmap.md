@@ -40,6 +40,8 @@
 | 0.11 | ADR 0001–0007 | ✅ |
 | 0.12 | `peon-hall/ai-docs/`（姊妹仓库） | 🟡 |
 | 0.13 | 待决项拍板（见文末） | ⬜ |
+| 0.14 | 第一轮布局评审 19 条落进文档（单一真相 / 可注入 / 单入口）+ [`implementation-order.md`](./implementation-order.md) | ✅ |
+| 0.15 | **library-first 重构**：`protocol` 独立、`peon-burrow` = lib + bin、`imap-watch` 默认关、发布策略 → [`adr-0008`](./decisions/adr-0008-library-first-layout.md) / [`adr-0009`](./decisions/adr-0009-crates-io-publishing.md) / [`../STABILITY.md`](../STABILITY.md) | ✅ |
 
 **P0 完成判据**：parity 文档里每一行都有明确的「必须一致 / 可以不同 / 应该不同」判定；
 每篇 design 文档都有「验收」小节；ADR 的每个决策都有「否决的方案 + 理由」。
@@ -48,11 +50,11 @@
 
 ## P1 · 中继内核
 
-**范围**：`peon-burrow-core`（隧道 + watch + 策略）+ `peon-burrow-config` 的读取部分 + 最小 CLI（`run`）。
+**范围**：`peon-burrow-protocol` + `peon-burrow-core`（隧道 + 策略 + `RelayState`；`imap-watch` 用 feature 打开）+ 最小前台入口。**按 [`implementation-order.md`](./implementation-order.md) 的 S0–S5 顺序推进。**
 
 | # | 任务 | 验收 |
 | --- | --- | --- |
-| 1.1 | workspace 骨架 + 6 个 crate 的空壳 + 依赖方向检查 | `cargo clippy --all-targets` 干净 |
+| 1.1 | workspace 骨架 + **9 个包**的空壳（含 `testkit` / `examples`）+ 布局守卫（[`modules.md § 12`](./modules.md)） | `cargo clippy --all-targets` 干净；守卫脚本通过 |
 | 1.2 | URL 解析与策略（token / 白名单通配 / loopback / `tls=0`+993） | 单测覆盖 parity W2–W6、C4–C6 |
 | 1.3 | 透传隧道（tokio + rustls + 双向背压） | parity § 6.1 第 1–5 条 |
 | 1.4 | 第一帧分流 + 第一帧补投 + 后续帧注册时机 | parity C7–C11、6.1 第 2 条（回声字节数不翻倍） |
@@ -79,7 +81,8 @@
 | 2.5 | `doctor` 13 项检查 + `--json` | logging § 6 的 5–8 |
 | 2.6 | `peon-burrow-service`：Windows（任务计划程序 + SCM 可选）、macOS、Linux | 三平台装/卸/启停/自启 + **安装后自检失败重启已配置** |
 | 2.7 | 服务宿主：SCM 状态上报、信号处理、优雅关停（先断连接） | ADR-0003 § 3；parity 6.2 第 19 条 |
-| 2.8 | `peon-burrow-ipc` 控制面服务端（socket + TCP 退路 + token + 命令白名单） | control-plane § 9 的 1–10 |
+| 2.8 | `peon-burrow-ipc-types` 类型 + `peon-burrow-ipc` 传输（socket + TCP 退路 + token + 命令白名单） | control-plane § 9 的 1–10 |
+| 2.9 | `peon-burrow` 产品层：config（三层合并 + 组合规则 + `Paths` 注入）/ `doctor` 注册表 / 控制面命令映射 / `ExitCode`+`AppError` / `run()` | control-plane § 9 + 命令映射、退出码、doctor 单测 |
 
 **P2 的里程碑验收**：在干净 Windows 机器上
 `service install --mode user` → **重启机器** → 打开扩展（手填 `ws://127.0.0.1:41316/`）→ 能收验证码。
@@ -109,6 +112,7 @@
 | 4.3 | `manifest` job（`latest.json` + 签名） | 清单内容与实测二进制 sha256 一致 |
 | 4.4 | `beta` 渠道演练 | 从 `beta` 装 → 切 `stable` → 不降级且有日志 |
 | 4.5 | 首次真实发版 `v0.1.0` | 干净机器上：装 → 收信 → 自更新到 `v0.1.1` → 恢复收信 |
+| 4.6 | **crates.io 发布**（7 个 crate）+ `cargo-semver-checks` 门禁 | `cargo install peon-burrow` 装上 `burrow`；破坏性改动被 CI 拦住（[`adr-0009`](./decisions/adr-0009-crates-io-publishing.md)） |
 
 ---
 
@@ -117,7 +121,7 @@
 | # | 任务 | 仓库 |
 | --- | --- | --- |
 | 5.1 | Tauri 骨架 + 状态卡片（四种组合）+ 五个操作 | `peon-hall` |
-| 5.2 | 控制面客户端（`peon-burrow-ipc` git 依赖）+ `doctor` 展示 | `peon-hall` |
+| 5.2 | 控制面客户端（`peon-burrow-ipc`：发布前 git 依赖 / 发布后版本依赖）+ `doctor` 展示 | `peon-hall` |
 | 5.3 | sidecar 打包（`core-version.txt` → 下载 → `externalBin`） | `peon-hall` |
 | 5.4 | 提权辅助（安装/卸载系统服务、自启开关） | `peon-hall` + `peon-burrow` |
 | 5.5 | 桌面端 CI：三平台安装包 | `peon-hall` |

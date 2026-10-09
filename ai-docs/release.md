@@ -60,6 +60,22 @@ gh release download v0.2.0 --pattern 'SHA256SUMS' --clobber
 
 ---
 
+## 2.5 发布到 crates.io
+
+`release.yaml` 里的 `publish` job 由 `harbor` 编排（与 `assets` 并列 `needs: [checks]`）：
+
+```bash
+cargo binstall harbor --version 0.1.4 --no-confirm --disable-strategies compile
+cargo harbor check --plan "$GITHUB_REF_NAME"     # tag vs manifest + token + 依赖顺序 preflight
+cargo harbor publish                             # 已发布过的版本视为完成 → 可重跑
+```
+
+顺序：`protocol → core → ipc-types → ipc → service → update → peon-burrow`
+（**首次发布必须按顺序手动走一遍**：registry 上还没有依赖版本时，后面的 crate 过不了校验）。
+`testkit` / `examples` 是 `publish = false`。详见 [`adr-0009`](./decisions/adr-0009-crates-io-publishing.md)。
+
+---
+
 ## 3. 发版前 checklist
 
 | # | 检查 | 为什么 |
@@ -73,6 +89,9 @@ gh release download v0.2.0 --pattern 'SHA256SUMS' --clobber
 | 7 | Windows 归档里的 exe 双击能跑 `version` | 冒烟（架构/依赖问题在这一步暴露） |
 | 8 | 兼容性矩阵（[`05 § 4`](./05-release-and-versioning.md)）是否需要加行 | 桌面端要对齐 core |
 | 9 | `mail-peon` 那边的默认端口是否已切换（P5 之后） | 决定文档里写哪个地址 |
+| 10 | `cargo-semver-checks` 对稳定层 6 个 crate 全绿 | 「破坏性改动必须 minor/major」不能靠自觉 |
+| 11 | 每个待发布 crate 的 `cargo publish --dry-run -p <crate> --locked` 通过 | crates.io 版本不可复用，发错了只能再发一版 |
+| 12 | 每个 crate 都有自己的 `README.md`（crates.io 会渲染它） | 只靠仓库根 README 会让 crate 页面很空 |
 
 端口复核一键脚本（Windows）：
 
@@ -116,5 +135,5 @@ cargo bumpp --preid rc minor      # → v0.3.0-rc.1
 | 1 | 在干净 Windows 机器上装一次（用户级），重启，收一封验证码邮件 |
 | 2 | 跑一次 `update apply` 演练（从上一个版本升到本次） |
 | 3 | 更新 [`05-release-and-versioning.md § 4`](./05-release-and-versioning.md) 的兼容性矩阵（如需） |
-| 4 | 若本次改了 `peon-burrow-ipc`，在 `peon-hall` 仓库升级 git 依赖的 tag 并在那边发版 |
+| 4 | 若本次改了 `peon-burrow-ipc-types`，在 `peon-hall` 仓库升级 git 依赖的 tag 并在那边发版 |
 | 5 | 若本次改了协议，更新 [`design/wire-protocol.md`](./design/wire-protocol.md) 并在 `mail-peon` 仓库提对应改动（**协议变更必须两边一起发**） |

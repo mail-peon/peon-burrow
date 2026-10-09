@@ -2,7 +2,7 @@
 
 > 版本号核验于 **2026-10-09**（crates.io API）。选型原则：
 > ① 优先「一件事一个 crate」；② 许可证必须 MIT / Apache-2.0 系（**不引入 LGPL**）；
-> ③ 维护活跃（近半年有发布）；④ 能在 Windows 上跑通（本项目的第一目标平台）。
+> ③ 维护活跃（近半年有发布）；④ 能在 Windows 上跑通（本项目的第一目标平台）；⑤ **许可证保持 MIT**（[`../STABILITY.md § 7`](../STABILITY.md)）。
 >
 > ⚠️ 版本会漂移：这份表是**决策记录**，不是锁文件。落地时以 `Cargo.toml` 与 `Cargo.lock` 为准。
 
@@ -19,16 +19,19 @@
 | Windows 服务（跑 + 管 SCM） | `windows-service` | 0.8.1 | MIT OR Apache-2.0 | 唯一同时提供「服务入口 + SCM 管理（创建/删除/启停/失败动作）」的 crate |
 | macOS / Linux 服务注册 | `service-manager` | 0.11.0 | MIT OR Apache-2.0 | 生成 launchd plist / systemd unit 并调 `launchctl` / `systemctl`；`ServiceLevel::User\|System` 两档 |
 | Windows 用户级自启 | **自己实现**（任务计划程序，走 `windows` crate 或 `schtasks /XML`） | —— | —— | 见 § 3.2：HKCU `Run` 会让控制台程序**闪一个黑框**，不能接受 |
-| 控制面 IPC | `interprocess`（本地 socket 抽象） | 2.4.4 | 0BSD OR Apache-2.0 | 一套代码同时覆盖命名管道与 UDS；`auto` 模式下另留 loopback TCP 退路 |
+| 控制面（类型层） | `serde` + `serde_json` | 1.x | MIT/Apache-2.0 | **只依赖这两个** → `peon-burrow-ipc-types`；桌面端能单独拿类型 |
+| 控制面（传输层） | `interprocess` | 2.4.4 | 0BSD OR Apache-2.0 | 一套代码覆盖命名管道与 UDS；`auto` 模式下另留 loopback TCP 退路 → `peon-burrow-ipc` |
 | 自更新 | `self_update`（features: `checksums` `signatures` `signature` `async`）+ 自研清单解析 | 1.3.0 | MIT | 校验和 + zipsign 验签 + **替换正在运行的自己**（内部用 `self-replace` 1.5.0） |
 | 自我替换（备选/兜底） | `self-replace` | 1.5.0 | Apache-2.0 | 若 `self_update` 的 `ReleaseSource` 不够用（我们要自定义清单），直接用它 + `reqwest` |
 | HTTP 客户端 | `reqwest`（`rustls-tls`、`json`、可选 `socks`） | 0.13.x | MIT/Apache-2.0 | 自更新下载、`doctor` 的时间检查 |
 | 配置 | `serde` + `toml` | 1.x / 0.9.x | MIT/Apache-2.0 | TOML 好手写、带注释（对齐 `Cargo.toml` 的体验） |
+| 平台目录 | `directories` | 6.x | MIT/Apache-2.0 | ⚠️ **只允许出现在 `Paths::discover()` 里**；其余地方一律注入（L4），否则测试只能污染真实用户目录 |
 | CLI | `clap`（`derive`） | 4.5.x | MIT/Apache-2.0 | 子命令表见 [`design/config-schema.md § 4`](./design/config-schema.md) |
 | 日志 | `tracing` + `tracing-subscriber`（`fmt`、`json`、`env-filter`）+ `tracing-appender` | 0.1.x / 0.3.x / 0.2.x | MIT | 结构化事件名（[`logging-and-diagnostics.md § 2.4`](./design/logging-and-diagnostics.md)） |
 | 进程 / 端口信息 | `sysinfo` | 0.3x | MIT | 「谁占着 41316」要给出 PID + 进程名 |
 | Windows 事件日志（可选） | `windows-eventlog` 或 `tracing-etw` | 待核 | MIT/Apache-2.0 | 只用于「服务启动/停止/崩溃」这类低频事件 |
 | 错误 | `thiserror`（库）/ `anyhow`（bin） | 2.x / 1.x | MIT/Apache-2.0 | 库要给人匹配的类型化错误（`FatalError` vs `TransientError`，见 parity E6） |
+| 字节缓冲 | `bytes` | 1.x | MIT | 与 tungstenite 同族；**公开 API 只用 `Bytes`，不出现 `Vec<u8>`**（省一次拷贝，且签名一旦公开就难改） |
 | 校验和 / 编码 | `sha2` + `hex`（`base64` 给 token） | 0.10.x / 0.4.x | MIT/Apache-2.0 | 自更新与 `SHA256SUMS` |
 | 本地 tag / 版本 | `cargo-bumpp`（本地工具，不进依赖） | 0.4.1 | MIT | 与作者其它仓库一致：`cargo bumpp <level>` 改版本、提交、打 tag、推 tag |
 
@@ -88,7 +91,7 @@
 | **任务计划程序（推荐）** | `schtasks /Create /SC ONLOGON /TN burrow /TR "<exe> run" /IT /F`，配 `Hidden`（走 `/XML` 才能设）→ **不闪窗**；且支持「任务失败重启」 |
 | 装成系统服务（可选，需提权） | 见 ADR-0003；用户默认路径不选它 |
 
-> 结论：Windows 上**用户级自启用任务计划程序**，`auto-launch` 这个 crate 因此不引入
+> 结论：Windows 上**用户级自启用任务计划程序**，`auto-launch` 这个 crate 因此不引入（布局评审 丁1：一个控制台子系统二进制 + 任务计划程序 `Hidden`，不做 GUI 子系统/双 bin）。
 > （它在 macOS/Linux 上做的事情，`service-manager` 已经能做，没必要两套机制）。
 >
 > 待办：`Hidden` 需要 XML 而不是命令行开关，落地时确认最简写法（`schtasks /Create /XML <file>`）。
@@ -166,7 +169,7 @@ let status = self_update::backends::github::Update::configure()
 | 资产上传 | `gh release create \|\| true` + `gh release upload --clobber` | 官方 CLI，无第三方 action，天然幂等 |
 | 校验和 | 独立的 `checksums` job → 一个 `SHA256SUMS` | 与作者其它仓库一致；含「上传后确认」一步 |
 | 自更新清单 | 自研 `latest.json` 生成脚本 | 需要「每平台 URL + sha256 + 签名」，没有现成工具能吐我们的格式 |
-| crates.io 发布 | **不做**（v0.x） | 这是二进制产品，不是给第三方用的库。将来若要发布 `peon-burrow-ipc` 再引入 `harbor` |
+| crates.io 发布 | **发 7 个 crate**（`harbor` 编排：preflight 算依赖顺序、「已在 registry 上」视为完成，重跑安全） | 这是库项目，用户要能 `cargo add` 与 `cargo install peon-burrow`；见 [`adr-0009`](./decisions/adr-0009-crates-io-publishing.md) |
 
 ---
 

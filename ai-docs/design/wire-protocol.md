@@ -165,6 +165,9 @@ greeting ──(未标记的 * OK / * PREAUTH)──▶ login ──(A000n OK)�
 
 ### 5.1 计划扩展：版本协商（未实现）
 
+> ⚠️ 命名：扩展侧这套版本常量叫 **`WATCH_PROTOCOL_VERSION`**；控制面（GUI ↔ 服务）那套叫
+> **`IPC_PROTOCOL_VERSION`**。两个 `PROTOCOL_VERSION` 混用是明确的隐患（约定 C1）。
+
 | 方向 | 字段 | 兼容规则 |
 | --- | --- | --- |
 | 扩展 → 中继 | `protocol`（缺省视为 `1`）、`clientVersion` | 中继只认 `1` 与 `2`；更高 → `state:"failed"` 提示升级中继 |

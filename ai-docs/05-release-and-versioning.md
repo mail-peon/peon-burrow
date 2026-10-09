@@ -10,7 +10,7 @@
 
 | | core（本仓库） | desktop（姊妹仓库） |
 | --- | --- | --- |
-| 版本号来源 | `Cargo.toml` 的 `[workspace.package] version` | `package.json` 的 `version`（Tauri 的 `tauri.conf.json` 必须与之相同，见 § 5） |
+| 版本号来源 | `Cargo.toml` 的 `[workspace.package] version`（**7 个发布的 crate 与 2 个内部 crate 全部继承它**） | `package.json` 的 `version`（Tauri 的 `tauri.conf.json` 必须与之相同，见 § 5） |
 | tag | `v<major>.<minor>.<patch>`，例 `v0.1.0` | 同名规则，各自仓库内 |
 | 触发 | `push: tags: ["v*.*.*"]` | 同名 |
 | 产物 | 三/四平台归档 + `latest.json` + `SHA256SUMS` | 三平台安装包 |
@@ -52,7 +52,7 @@ GitHub Release 标题建议写成 `v0.2.0`（仓库名已经说明了归属）�
 
 桌面端会**捆绑**一个确定的 core 版本，所以「哪个 GUI 带哪个 core」必须能查。
 
-| desktop | 捆绑 core | `peon-burrow-ipc` 契约 | 备注 |
+| desktop | 捆绑 core | `peon-burrow-ipc-types` 契约 | 备注 |
 | --- | --- | --- | --- |
 | 0.1.x | 0.1.x | v1 | 首个版本；五种操作 + 诊断 |
 | （后续每行在发版时补） | | | |
@@ -133,4 +133,6 @@ GitHub Release 标题建议写成 `v0.2.0`（仓库名已经说明了归属）�
 5. 核对 release 上的资产清单与本文件 § 1 的产物矩阵一致；
 6. 在**干净机器**上装一次（用户级），重启，收一封信；
 7. `update apply` 演练一次（用 `v0.x.y-1` 的 beta 清单）；
-8. 补齐 § 4 的兼容性矩阵行（若本次影响桌面端）。
+8. 补齐 § 4 的兼容性矩阵行（若本次影响桌面端）；
+9. `cargo publish --dry-run` 过全部 7 个 crate（顺序见 [`adr-0009`](./decisions/adr-0009-crates-io-publishing.md)）；
+10. `cargo-semver-checks` 对稳定层 6 个 crate 通过。

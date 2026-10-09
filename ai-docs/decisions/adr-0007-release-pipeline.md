@@ -28,7 +28,7 @@
 | 归档 | `{crate}-{target}.tar.gz` / `.zip`（**不带版本号**，二进制 + `LICENSE` 在归档根） |
 | CHANGELOG | **没有**（提交信息用 Conventional Commits；Release notes 由 tag/PR 组成） |
 | 版本 / tag | 本地 `cargo bumpp <level>`，提交 `chore: release v{version}`，推 tag 是唯一发版触发 |
-| 发布到 crates.io | 用 `harbor` 编排（**本仓库不需要**，见决策 8） |
+| 发布到 crates.io | 用 `harbor` 编排（**要发布**，7 个 crate；见 [`adr-0009`](./adr-0009-crates-io-publishing.md)） |
 | `workflow_dispatch` | 不用；发布失败就重跑 job（tag 不变） |
 
 ## 决策
@@ -176,12 +176,15 @@ manifest job:
 
 详见 [`design/update-flow.md § 2`](../design/update-flow.md)。
 
-### 8. **不发布到 crates.io**（首版）
+### 8. 发布到 crates.io（**已反转**）
 
-这是**二进制产品**，不是给第三方用的库；发布到 crates.io 会带来「对外兼容承诺」，
-而我们的 `peon-burrow-ipc` 只是 core 与 desktop 之间的内部契约（用 git 依赖 + tag 钉版，见 [`adr-0001`](./adr-0001-two-repos.md)）。
+第一轮写的是「不发布」，理由是「这是二进制产品，不是给第三方用的库」。
+**该前提已不成立**：本项目定位为标准库，`service` / `update` 是可直接复用的工具，
+桌面端也要从 crates.io 取类型。
 
-因此本仓库**不需要 `harbor`**（它的价值是 crates.io 的发布编排与重试）。将来若要发布 `peon-burrow-ipc`，再引入。
+现在发布 **7 个 crate**（`testkit` / `examples` 为 `publish = false`），顺序与门禁
+（`harbor` 编排、`cargo-semver-checks`、`--dry-run`）见
+[`adr-0009`](./adr-0009-crates-io-publishing.md)。本节的其余部分（tag 触发、三平台矩阵、资产上传、`SHA256SUMS`）不变。
 
 ### 9. 与桌面端仓库的衔接
 
@@ -189,11 +192,11 @@ manifest job:
 
 | 依赖点 | 说明 |
 | --- | --- |
-| `peon-burrow-ipc` 的 git 依赖 | desktop 的 `Cargo.toml` 钉在 core 的某个 **tag** 上 → 该 tag 必须先存在（推了 tag 就有） |
+| `peon-burrow-ipc-types` 的 git 依赖 | desktop 的 `Cargo.toml` 钉在 core 的某个 **tag** 上 → 该 tag 必须先存在（推了 tag 就有） |
 | sidecar 二进制 | desktop CI 用 `gh release download` 取（`gh` 对公开仓库不需要 token） |
 | 版本记录 | peon-hall 仓库的 `core-version.txt` 由人工或脚本更新；CI 可用 `core_ref` 覆盖 |
 
-⚠️ **一个容易踩的点**：`peon-burrow-ipc` 的破坏性改动必须先发 core（minor 版本），
+⚠️ **一个容易踩的点**：`peon-burrow-ipc-types` 的破坏性改动必须先发 core（minor 版本），
 desktop 再跟进 —— 反之会出现「desktop 引用了还不存在的 tag」。
 
 ## 后果
@@ -229,4 +232,4 @@ desktop 再跟进 —— 反之会出现「desktop 引用了还不存在的 tag�
 1. 确认 `windows-11-arm` / `ubuntu-24.04-arm` 的可用性与稳定性（首版可以先只发 4 个 target）；
 2. ARM 版发布后，自更新清单要多两个 `target` 条目 —— `peon-burrow-update` 的 target 匹配逻辑要能处理「清单里有、本机不匹配」的情况（已设计，见 update-flow § 2.2）；
 3. 代码签名（Windows OV/EV、macOS notarize）与 `latest.json` 签名是**两件事**：前者解决 SmartScreen/Gatekeeper，后者解决更新通道真实性。首版至少做后者；
-4. `harbor` 的引入条件：`peon-burrow-ipc` 决定发布到 crates.io 时。
+4. `harbor` 已引入（`release.yaml` 的 `publish` job），发布顺序与门禁见 [`adr-0009`](./adr-0009-crates-io-publishing.md)。

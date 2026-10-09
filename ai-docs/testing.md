@@ -37,6 +37,10 @@
 
 ## 3. 集成测试的基础设施
 
+> 这些工具**统一放在 `peon-burrow-testkit`**（独立 dev-only crate，`publish = false`）：
+> `core` / `ipc` / `app` 三处都要用，写在某一个 crate 的 `tests/common/` 里等于另外两处用不到（只能复制）。
+> `Paths` 一律用 `Paths::for_test(tempdir)` 注入（L4）—— 测试**不许**碰真实用户目录。
+
 ```
 crates/peon-burrow-core/tests/
 ├── common/
@@ -148,7 +152,13 @@ Rust 版完成后、删 TS 版之前，做一次**行为对拍**：
 - `RUSTFLAGS: -D warnings` → warning 当错误；
 - 不用 `rust-toolchain.toml`（会让 MSRV job 失效）；
 - `cargo package` 相关的 job 用独立的 `CARGO_TARGET_DIR`，并在缓存前删掉 `target/package`；
-- 测试**不允许访问外网**（自更新测试用本地 HTTP server）。
+- 测试**不允许访问外网**（自更新测试用本地 HTTP server）；
+- 协议层测试（`crates/peon-burrow-protocol/tests/`）**不需要任何网络**：URL 两形态、关闭码、报文往返；
+- `imap-watch` 的用例用 `#[cfg(feature = "imap-watch")]` 门控，CI 额外跑一遍
+  `cargo test -p peon-burrow-core --no-default-features`（此时 `__watch` 必须被**明确拒绝**，而不是静默当透传）；
+- `testkit` 与 `examples` 都是 `publish = false`；
+- **两条布局守卫**（防结构漂移，抄 [`implementation-order.md § 9`](./implementation-order.md)）：
+  `bin/main.rs ≤ 60 行`、`cargo tree -p peon-burrow-ipc-types` 里不出现 `tokio`/`interprocess`。
 
 ---
 

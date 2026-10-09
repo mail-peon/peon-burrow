@@ -23,7 +23,7 @@
 | TLS 客户端 | implicit TLS（993），SNI，默认校验证书链 | `peon-burrow-core::tls`（`tokio-rustls`） |
 | watch 协议机 | 替扩展挂 `IDLE`，推「有新邮件了」 | `peon-burrow-core::watch` |
 | 访问控制 | token + host 白名单（支持 `*`）+ loopback 拒绝 | `peon-burrow-core::policy` |
-| 配置读取 | CLI `--flag` > `ENV` > 默认值，模块级常量 | `peon-burrow-config`（+ TOML 文件层） |
+| 配置读取 | CLI `--flag` > `ENV` > 默认值，模块级常量 | `peon-burrow`（产品层 config：TOML + CLI + ENV 三层） |
 | 端口占用处理 | `netstat`/`lsof` 找 PID → 终端 `[Y/n]` → `taskkill` | `burrow` CLI（**服务态不做这件事**，见 G3） |
 | 交互控制台 | TTY 下 `q` / `r` | 仅 `run --foreground` 且 TTY |
 | 日志 | stdout，`[imap-relay] ISO8601 msg` | `tracing` + 文件滚动（+ 控制面可读） |
@@ -57,18 +57,32 @@
 
 ## 3. 行为细节逐条对照
 
+### 0. 怎么用这张表（分组 → 实现步骤 → 验收）
+
+| 分组 | 主题 | 实现步骤（[`implementation-order.md`](./implementation-order.md)） | 验收断言 |
+| --- | --- | --- | --- |
+| A | 配置与启动 | S0、S7 | [`design/config-schema.md § 7`](./design/config-schema.md) |
+| B | WebSocket 服务生命周期 | S4 | § 6.1 第 1、4、9 条 |
+| C | 建连、策略与第一帧分流 | S2、S3、S4 | § 6.1 第 7、8 条 + § 6.2 第 14 条 |
+| D | 透传（隧道） | S3、S4 | § 6.1 第 2、3、5、6 条 |
+| E | watch（IDLE，需 `--features imap-watch`） | S5、S6 | § 6.2 第 10–12 条 |
+| F | 健壮性与运维 | S1、S9、S10、S12 | § 6.2 第 13、15–20 条 |
+
+> 原计划的「物理拆成 `parity/*.md`」**暂缓**：表格留在一处、用这张对照表逐组推进即可；
+> 拆文件的收益（并行勾选）不值那 200 行的搬迁风险。需要时再拆。
+
 ### A. 配置与启动
 
 | # | TS 行为（位置） | Rust 落点 | 判定 |
 | --- | --- | --- | --- |
-| A1 | `readOption`：CLI `--flag` > `ENV` > 默认值（`L82-87`） | `peon-burrow-config`：TOML 文件 + CLI + ENV 三层；**ENV 变量名保持兼容** | 必须一致（ENV/CLI 名） |
+| A1 | `readOption`：CLI `--flag` > `ENV` > 默认值（`L82-87`） | `peon-burrow`（产品层 config）：TOML + CLI + ENV 三层；**ENV 变量名保持兼容** | 必须一致（ENV/CLI 名） |
 | A2 | 端口非 0–65535 → stderr + `exit 1`（`L100-103`） | 配置校验失败 → 退出码 `2`（配置错误），并写状态文件 | 可以不同（退出码语义见 G6） |
 | A3 | 默认 `HOST=127.0.0.1`（`L106`） | 同 | 必须一致 |
 | A4 | `RELAY_TOKEN` 默认空（`L109`） | 同；服务模式下若用户曾设过则从配置文件读 | 必须一致 |
 | A5 | `ALLOWED_HOSTS`：逗号分隔、trim、转小写、去掉空项（`L116-119`） | 同；TOML 里用数组，CLI 仍接受逗号串 | 必须一致 |
 | A6 | `TLS_REJECT_UNAUTHORIZED` 默认 **开**（`L127`） | 同，且**不做**「默认放宽」的任何妥协 | 必须一致（安全属性） |
 | A7 | `RELAY_TRACE=1` 打印原始字节（`L140`） | 保留，但服务态需显式二次确认，且日志里标记 | 可以不同（默认值必须仍是关） |
-| A8 | 常量：`IDLE_TIMEOUT_MS = 15min`（`L162`）、`WATCH_REIDLE_MS = 25min`（`L151`）、退避 `[2,5,15,30,60,120,300]s`（`L159`）、`HIGH_WATER_BYTES = 16MiB`（`L224`） | `peon-burrow-config` 里的默认可配项；**数值默认不变** | 必须一致（数值） |
+| A8 | 常量：`IDLE_TIMEOUT_MS = 15min`（`L162`）、`WATCH_REIDLE_MS = 25min`（`L151`）、退避 `[2,5,15,30,60,120,300]s`（`L159`）、`HIGH_WATER_BYTES = 16MiB`（`L224`） | **默认值只在 `peon-burrow-core` 定义**（L3），config 只负责覆盖；**数值默认不变** | 必须一致（数值） |
 | A9 | 启动横幅 + 4 条安全告警（token/白名单/非 loopback/自签证书）（`L1343-1358`） | 日志同样的告警；GUI 状态页也展示 | 可以不同（形式） |
 | A10 | 日志格式 `[imap-relay] <ISO8601> <msg>`（`L1857-1859`） | `tracing` 默认格式；保留 `[relay]` 前缀便于用户对照旧文档 | 可以不同 |
 
@@ -110,10 +124,10 @@
 | D2 | `socket.setTimeout(IDLE_TIMEOUT_MS)`，超时 → 关连接（`L694, L863-865`） | `tokio::time::timeout` 包住读方向；watch 方向**禁用**（见 E16） | 必须一致（数值） |
 | D3 | `shutdown()` 用 `closed` 标志去重，避免两边互相触发重复日志（`L696-712`） | 同 | 可以不同（日志去重，行为一致） |
 | D4 | TCP→WS 背压：在途字节计数 + `HIGH_WATER (16MiB)` 暂停 + **半阈值**恢复（`L714-752`） | 同：`in_flight: usize` + `Notify`/`watch` 通道；`split()` 后两个方向各自任务 | 必须一致（阈值与迟滞） |
-| D5 | WS→TCP：二进制帧原样写；文本帧按 UTF-8 编码后写（`L780-782`） | 同：`Message::Binary` 直写，`Message::Text` → `bytes()` | 必须一致 |
+| D5 | WS→TCP：二进制帧原样写；文本帧按 UTF-8 编码后写（`L780-782`） | 同：`Message::Binary` 直写，`Message::Text` → `bytes()`；**公开 API 用 `Bytes`**（丙4） | 必须一致 |
 | D6 | `write()` 返回 false → `ws.pause()`；`drain` → `ws.resume()`（`L796-799, L827-832`） | 背压：`SinkExt::feed/send` 的 `await` **本身就是背压** —— 不要额外造暂停逻辑，也不要无界 `mpsc` | 应该不同（Rust 用 await 背压） |
 | D7 | 建连失败通过 `onConnectError` 上报；判据是 `socket.connecting`（`L857-858`） | 区分「connect 阶段失败」与「连接后失败」（`connect().await` 的 `Err` vs 读循环里的 `Err`） | 必须一致（能力） |
-| D8 | 自签证书错误给出人话提示（`L843-847`） | `rustls` 错误映射到同样的提示文案 | 必须一致（文案可参照） |
+| D8 | 自签证书错误给出人话提示（`L843-847`） | `rustls` 错误映射到同样的提示文案；**唯一实现在 `transport.rs`，tunnel 与 watch 共用**（甲4） | 必须一致（文案可参照） |
 | D9 | tcp `error`/`timeout`/`close`、ws `close`/`error` 全部走 `shutdown`（`L863-877`） | 同 | 必须一致 |
 
 ### E. watch（IDLE）
@@ -164,7 +178,7 @@
 
 | 主题 | TS 版 | Rust 版 | 为什么必须改 |
 | --- | --- | --- | --- |
-| **G1 单文件** | 1901 行一个文件 | 6 个 crate（[`01-architecture.md § 2.1`](./01-architecture.md)） | 服务注册、自更新、控制面都要各自的测试与依赖边界 |
+| **G1 单文件** | 1901 行一个文件 | **9 个包**：`protocol` + 5 个稳定库 + `peon-burrow`（lib + bin `burrow`）+ 2 个内部包（[`adr-0008`](./decisions/adr-0008-library-first-layout.md)） | 稳定层要能被单独依赖；产品逻辑放 lib 以便测试；bin 只有 40 行 |
 | **G2 配置** | CLI + ENV，模块级常量 | 再加 TOML 文件层；ENV 名兼容 | 服务不由用户手动启动，配置必须能落盘；模块级常量导致**一个进程只能跑一个实例** |
 | **G3 端口占用** | 找到 PID → 交互问 → `taskkill /F` | 用户级自启：**不杀、不换端口**；先判断占用者是不是自己的旧实例（控制面握手），是则视为「已在运行」；不是则**明确失败**并给出「谁占着 + 怎么办」。前台 CLI 才提供 `--force-port` | ① 服务没有 TTY，交互式提问等于挂死；② 一个后台服务**不该**有权限去杀任意进程；③ 扩展只认固定默认端口，**静默换端口 = 用户永远连不上**（比失败更糟） |
 | **G4 日志** | stdout | 文件 + 滚动 + 控制面可读；stdout 仅前台模式 | 服务态没有终端；排查必须能回看历史 |

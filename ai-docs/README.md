@@ -4,6 +4,8 @@
 > 本地 [`../../peon-hall/ai-docs/`](../../peon-hall/ai-docs/README.md) ·
 > GitHub `peon-hall`。
 >
+> 📌 **稳定性分级与 semver 政策**在仓库根 [`../STABILITY.md`](../STABILITY.md)（首发即生效）。
+>
 > 写法沿用 `mail-peon` 仓库的约定：**结论 → 理由 → 反例（踩过的坑）**，关键处标 ⚠️。
 > 目标读者是「下一个接手的人 / AI 协作者」，要求「看完即可着手写」。
 
@@ -21,6 +23,7 @@
 | [03-roadmap.md](./03-roadmap.md) | 阶段划分、每阶段验收、当前进度 |
 | [04-parity-node-to-rust.md](./04-parity-node-to-rust.md) | **TS 中继逐条梳理 + Rust 落点**（重写时的对照表，最重要的一篇） |
 | [05-release-and-versioning.md](./05-release-and-versioning.md) | 版本与 tag 规则、与桌面端的版本绑定、发布渠道 |
+| [implementation-order.md](./implementation-order.md) | **按依赖排的文件清单**：先写哪个文件、写完怎么验证、两条布局守卫 |
 | [modules.md](./modules.md) | 每个 crate 的职责、公开 API、依赖规则、测试落点 |
 | [service-lifecycle.md](./service-lifecycle.md) | 服务生命周期：安装/自启/崩溃恢复/自更新后的重启 |
 | [testing.md](./testing.md) | 测试策略：单测、mock IMAP、TLS 回声、三平台矩阵 |
@@ -47,7 +50,9 @@
 | 4 | [adr-0004-port-default.md](./decisions/adr-0004-port-default.md) | 默认端口 41316 与「绝不静默换端口」 |
 | 5 | [adr-0005-self-update.md](./decisions/adr-0005-self-update.md) | 自更新方案：清单 + 镜像站 + 校验 + 自我替换 |
 | 6 | [adr-0006-desktop-installer.md](./decisions/adr-0006-desktop-installer.md) | 桌面端形态（Tauri 安装器、不做自更新、提权路径）——**core 要提供的接口由它定义** |
-| 7 | [adr-0007-release-pipeline.md](./decisions/adr-0007-release-pipeline.md) | 发版流水线：tag 触发、三平台矩阵、`latest.json`、与 git 依赖的衔接 |
+| 7 | [adr-0007-release-pipeline.md](./decisions/adr-0007-release-pipeline.md) | 发版流水线：tag 触发、三平台矩阵、`latest.json` |
+| 8 | [adr-0008-library-first-layout.md](./decisions/adr-0008-library-first-layout.md) | **library-first 布局**：crate 边界与稳定性分层（取代 `-app` 与伞 crate） |
+| 9 | [adr-0009-crates-io-publishing.md](./decisions/adr-0009-crates-io-publishing.md) | **发布到 crates.io**：发哪些、顺序、binstall 元数据、semver-checks 门禁 |
 
 ---
 
@@ -58,6 +63,8 @@
 3. **要动协议**：先读 [`design/wire-protocol.md`](./design/wire-protocol.md) 的「冻结」声明；改协议 = 改扩展，是**跨仓库破坏性变更**
 4. **要动服务 / 安装 / 更新**：[`adr-0003`](./decisions/adr-0003-service-model.md)、[`service-lifecycle.md`](./service-lifecycle.md)、[`design/update-flow.md`](./design/update-flow.md)
 5. **要发版**：[`release.md`](./release.md) + [`05-release-and-versioning.md`](./05-release-and-versioning.md)
+6. **要动手写代码**：先读 [`implementation-order.md`](./implementation-order.md)（含「哪一步对应哪条 parity 断言」），
+   布局铁律见 [`modules.md`](./modules.md) 开头
 
 ---
 

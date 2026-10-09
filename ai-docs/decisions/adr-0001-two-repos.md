@@ -1,7 +1,7 @@
 # ADR-0001 · 两个独立仓库（同一父目录）
 
 - **状态**：已采纳
-- **影响面**：仓库边界、tag 命名、跨仓库类型共享、桌面端的 sidecar 绑定、文档引用方式
+- **影响面**：仓库边界、tag 命名、跨仓库类型共享（crates.io 版本依赖）、桌面端的 sidecar 绑定、文档引用方式
 - **相关**：[`adr-0006`](./adr-0006-desktop-installer.md)、[`05-release-and-versioning.md`](../05-release-and-versioning.md)
 
 ---
@@ -71,6 +71,12 @@ tag 同时承担第二个职责：**它是桌面端钉 core 版本的锚点**（
 
 ### 3. Q1：控制面类型用 **git 依赖 + tag 钉版**
 
+> 📦 **契约是 `peon-burrow-ipc-types`**（纯类型，只依赖 `serde`）；`peon-burrow-ipc` 是**传输**
+> （本地 socket + 客户端）。桌面端需要客户端，所以两个都依赖；`core`/`service` 只依赖类型层 ——
+> 这样它们不会被拖进 `interprocess`（布局评审 甲1）。
+> **首次发布到 crates.io 之后**，桌面端改用版本依赖（`peon-burrow-ipc = "0.1"`），
+> git 依赖只是发布前的过渡（[`adr-0009 § 6`](./adr-0009-crates-io-publishing.md)）。
+
 桌面端 `src-tauri/Cargo.toml`：
 
 ```toml
@@ -83,7 +89,7 @@ peon-burrow-ipc = { git = "https://github.com/mail-peon/peon-burrow", tag = "v0.
 - **提交 `Cargo.lock`**：git 依赖必须锁到具体 commit，否则每次构建拉到的都是 tag 当时的样子（tag 被强推过就更糟）。
 - 本地开发时，如果两个仓库并排存在，可以临时改成路径依赖（`path = "../../peon-burrow/crates/peon-burrow-ipc"`），
   **但不许提交**（提交后 CI 与别人的 checkout 都会找不到路径）。这一点写进桌面端 README 的「本地联调」小节。
-- peon-burrow 侧的纪律：**`peon-burrow-ipc` 的破坏性改动必须伴随 core 的 minor/major 版本变化**，
+- peon-burrow 侧的纪律：**`peon-burrow-ipc-types` 的破坏性改动必须伴随 core 的 minor/major 版本变化**，
   因为它是对外契约（对桌面端而言）。
 
 ### 4. Q2：桌面端从 core 的 **Release 资产**取二进制
@@ -128,7 +134,7 @@ peon-burrow-ipc = { git = "https://github.com/mail-peon/peon-burrow", tag = "v0.
 
 | 代价 | 缓解 |
 | --- | --- |
-| **跨仓库的原子改动做不到**（改 `peon-burrow-ipc` 字段 + 改 GUI 调用，要两个 PR） | ① 桌面端在 core 发版**之后**才升级依赖；② 破坏性改动走 core 的 minor 版本，桌面端按需跟进 |
+| **跨仓库的原子改动做不到**（改 `peon-burrow-ipc-types` 字段 + 改 GUI 调用，要两个 PR） | ① 桌面端在 core 发版**之后**才升级依赖；② 破坏性改动走 core 的 minor 版本，桌面端按需跟进 |
 | git 依赖需要网络与 tag 存在 | CI 天然有网；本地首次构建也需要网（可接受，与 cargo 的其它依赖一样） |
 | 桌面端构建慢一步（先下 core 产物） | 下载的是编译好的归档（几 MB），比现场 `cargo build` 快得多 |
 | 文档跨仓库引用不再「点一下就跳」 | 见决策 6 的双写法 |
@@ -139,13 +145,13 @@ peon-burrow-ipc = { git = "https://github.com/mail-peon/peon-burrow", tag = "v0.
 | 方案 | 否决理由 |
 | --- | --- |
 | 单仓双项目 | **用户已明确要求两个仓库**；且单仓里桌面端的构建会拖累 core 的 CI 矩阵 |
-| 把 `peon-burrow-ipc` 发布到 crates.io | 引入「对外兼容承诺」与发布节奏耦合；`peon-burrow-ipc` 是内部契约而不是给第三方用的库。将来真有第三方消费再考虑 |
+| ~~把契约发布到 crates.io~~ | **已改**：项目定位是标准库，7 个 crate 都要发布（[`adr-0009`](./adr-0009-crates-io-publishing.md)） |
 | 在桌面端复制一份控制面类型 | 漂移不可检（JSON 字段写错只在运行时暴露）；违背「契约单点定义」 |
 | git submodule | 心智负担大，且 `peon-burrow` 同时是「被依赖的库」与「被下载的产物源」两种角色，submodule 只解决其中一个 |
 | 桌面端现场编译 core | 安装包里的 core 与官方发布的 core 不再是同一份产物，出问题无法复现 |
 
 ## 后续
 
-1. 若出现**第三个**消费方（VS Code 扩展、CLI 工具），再评估把 `peon-burrow-ipc` 独立成第三个仓库或发布到 crates.io；
+1. 类型共享已由 crates.io 版本依赖解决（[`adr-0009`](./adr-0009-crates-io-publishing.md)）；若出现第三个消费方，再评估是否需要第三个仓库；
 2. 桌面端是否需要自动拉取「最新 core」而不是钉 `core-version.txt`：**不需要**，钉版更可复现；
 3. `mail-peon` 扩展仓库的联动（默认端口、文案）见 [`design/wire-protocol.md § 6`](../design/wire-protocol.md)。

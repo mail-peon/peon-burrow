@@ -97,6 +97,11 @@
 `burrow doctor [--json]` 输出**逐项检查 + 结论 + 下一步动作**。
 这是替代「用户在终端里手敲 netstat」的核心工具。
 
+> 🧩 **实现方式：检查项注册表**（`peon-burrow/src/doctor/`）—— 每个检查一个 struct 实现 `Check`
+> （`async fn check(&self, ctx) -> CheckResult`），**检查逻辑与输出格式（人类可读 / `--json`）分离**。
+> 加一项检查 = 加一个 struct，不改输出层（丙5）。
+> 端口那一项直接调 `peon-burrow-service::probe_port()`，不自己解析 `netstat`（丁3）。
+
 | # | 检查项 | 判定 | 失败时的下一步（文案要点） |
 | --- | --- | --- | --- |
 | 1 | 配置文件可读、可解析、通过校验 | 读文件 → 校验规则 | 指出**具体哪个键、什么值、期望什么** |

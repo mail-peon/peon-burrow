@@ -7,6 +7,10 @@
 
 ## 1. 它要回答两个问题
 
+> 📦 **分层**：所有**类型**（`Request` / `Response` / `StatusReport` / `ServiceStatus`）在
+> `peon-burrow-ipc-types`（只依赖 `serde`，是对外契约）；**传输**（本地 socket / TCP 退路 / 客户端 / 服务端）
+> 在 `peon-burrow-ipc`。桌面端两个都依赖（它要客户端），`core`/`service` 只依赖类型层；控制面的**服务端接线**在产品 crate `peon-burrow`（`control.rs`）。
+
 | 问题 | 谁问 | 现状（TS 版） |
 | --- | --- | --- |
 | **「你活着吗？在哪个端口？什么版本？」** | 安装器 GUI、`doctor`、更新器 | 只能靠「端口连得上吗」猜，且**无法区分**「是我自己的旧实例」还是「别的进程占着」 |
@@ -71,7 +75,7 @@
 
 | 字段 | 说明 |
 | --- | --- |
-| `v` | 控制面协议版本。中继收到**更高**的 `v` → `error.code = "protocol-too-new"`（GUI 提示「中继版本过旧」） |
+| `v` | 控制面协议版本（常量 `IPC_PROTOCOL_VERSION`）。中继收到**更高**的 `v` → `error.code = "protocol-too-new"`（GUI 提示「中继版本过旧」）。⚠️ 扩展侧那套叫 `WATCH_PROTOCOL_VERSION`，两者别混（见 [`wire-protocol.md § 5`](./wire-protocol.md)） |
 | `id` | 客户端自增，响应原样回显（便于将来做并发；当前一问一答，仅用于日志关联） |
 | `token` | 见 § 4 |
 | 长度上限 | 单行 **≤ 8 KiB**；超限直接断开（防止一个本机进程把内存喂爆） |
@@ -103,7 +107,7 @@
 | `cmd` | 参数 | 返回 | 谁用 |
 | --- | --- | --- | --- |
 | `ping` | — | `{pong:true}` | 存活探测（比 `status` 轻） |
-| `status` | — | `{running, host, port, version, protocol, startedAt, connections, watchCount, mode, lastError}` | GUI 状态卡片 |
+| `status` | — | `StatusReport { process: ProcessStatus, service: ServiceStatus }` —— **两个权威来源**：进程内状态（`RelayState`）+ 服务注册状态（服务管理器）；类型定义在 `peon-burrow-ipc-types` | GUI 状态卡片（四种组合靠它区分） |
 | `version` | — | `{version, gitSha, buildTime, protocol}` | GUI 「关于」、更新器 |
 | `doctor` | `{verbose?}` | 结构化自检结果（见 [`logging-and-diagnostics.md`](./logging-and-diagnostics.md)） | GUI「诊断」按钮 |
 | `stop` | `{reason?}` | `{stopping:true}` | GUI「停止服务」、自更新 |

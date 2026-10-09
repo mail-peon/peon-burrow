@@ -134,7 +134,7 @@ Tauri 应用**无法**在非提权状态下安装服务（`CreateServiceW` / `sc
 - 服务注册逻辑只有一份（core），GUI 换框架也不影响服务行为；
 - 界面能表达「已安装但没跑」「跑着但没装」这类**TS 版无法区分**的状态，排查成本大降；
 - 免 UAC 的默认安装路径 + 可选系统服务，覆盖两类用户；
-- 控制面的 `peon-burrow-ipc` 类型由 core 定义 → GUI 与 CLI 永远同源。
+- 控制面的 `peon-burrow-ipc-types` 类型由 core 定义 → GUI 与 CLI 永远同源。
 
 ### 代价（如实记录）
 
@@ -157,9 +157,9 @@ Tauri 应用**无法**在非提权状态下安装服务（`CreateServiceW` / `sc
 
 ## 后续
 
-1. **提权辅助的形态待定**：① core 二进制再构建一份带 `requireAdministrator` manifest；
-   ② 单独一个 100 行的 `burrow-elevate` 小工具；③ GUI 自己带 manifest（但那样 GUI 全程提权，不可接受）。
-   倾向 ②（职责清晰、不影响主二进制）；
+1. **提权辅助的形态**：倾向在**产品 crate `peon-burrow` 里再加一个 `[[bin]]`**（如 `burrow-elevate`），
+   带 `requireAdministrator` manifest —— 一个 crate 多个 bin，与 `cargo-bumpp` 的做法一致
+   （[`adr-0008 § 5`](./adr-0008-library-first-layout.md)）；
 2. 是否提供「服务未安装时也能临时前台运行」的按钮：倾向**提供**（一键 `run`），
    它让用户在没有服务权限的机器上也能用；
 3. Linux 的 `pkexec` 在没有 polkit agent 的桌面上会失败 → 需要给出「用终端执行」的降级文案；

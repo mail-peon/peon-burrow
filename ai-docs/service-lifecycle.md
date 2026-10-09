@@ -32,6 +32,9 @@ GUI 的文案与按钮要按状态给（`启动` 而不是 `重试`）。
 
 ## 2. 各平台动作对照
 
+> 📦 所有「查询」都返回同一个类型 **`ServiceStatus`**（定义在 `peon-burrow-ipc-types`，CLI `service status --json`、
+> 控制面 `status`、`doctor` 三处共用）；**端口探测走 `peon-burrow-service::probe_port()`**，到处自己解析 `netstat` 是不允许的。
+
 | 动作 | Windows（用户级） | Windows（系统服务） | macOS（用户级） | macOS（系统级） | Linux（用户级） | Linux（系统级） |
 | --- | --- | --- | --- | --- | --- | --- |
 | 安装 | `schtasks /Create /XML`（任务计划程序） | SCM `CreateService` | 写 `~/Library/LaunchAgents/*.plist` | 写 `/Library/LaunchDaemons/*.plist` | 写 `~/.config/systemd/user/*.service` | 写 `/etc/systemd/system/*.service` |
@@ -97,6 +100,8 @@ GUI 的文案与按钮要按状态给（`启动` 而不是 `重试`）。
 ---
 
 ## 5. 自更新后的重启
+
+> 结束时的退出码是 **`ExitCode::RestartRequested = 5`**（唯一来源：`peon_burrow::ExitCode`）。
 
 以**非零退出码**结束，由服务管理器拉起（完整模型见
 [`design/update-flow.md § 6`](./design/update-flow.md)）。这里只强调三件事：

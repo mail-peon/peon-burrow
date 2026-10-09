@@ -633,22 +633,25 @@ impl ServiceHost for WindowsSystemHost {
             return Ok(ServiceStatus::not_installed(&self.name));
         }
 
-        let failure =
-            CommandSpec::new("sc", ["qfailure", &self.name], "读取系统服务的失败重启策略");
+        // `sc query` 只有状态（`STATE : 4 RUNNING`）；启动类型与二进制路径**只有 `sc qc` 有**
+        //（`sc query` 不打印 `START_TYPE` / `BINARY_PATH_NAME`）。用错那条命令的后果是
+        // 「自启永远显示已关闭、路径永远为空」——而它们都是界面上看得见的字段（真机踩过）。
+        let config_spec = CommandSpec::new("sc", ["qc", &self.name], "读取系统服务配置");
+        let config = crate::host::read_only(self.runner(), &config_spec).unwrap_or_default();
+
+        let failure = failure_actions_query(&self.name);
         let failure_stdout = crate::host::read_only(self.runner(), &failure).unwrap_or_default();
 
         Ok(ServiceStatus {
             installed: true,
-            // 复用上面那条 `sc query` 的输出，不再多查一次（少一条命令 = 少一个失败点）。
             running: service_is_running(&stdout),
             level: Some(ServiceLevel::System),
-            autostart: Some(inspect_sc_autostart(&stdout)),
+            autostart: Some(inspect_sc_autostart(&config)),
             name: self.name.clone(),
-            binary_path: inspect_sc_binary_path(&stdout),
+            binary_path: inspect_sc_binary_path(&config),
             // 系统服务：装 / 卸 / 启 / 停都要管理员；读状态不要。
             requires_elevation: true,
-            restart_policy_configured: verify_sc_failure_output(&failure_stdout, &self.name)
-                .is_ok(),
+            restart_policy_configured: verify_failure_actions(&failure_stdout, &self.name).is_ok(),
             last_exit_code: None,
         })
     }
@@ -791,10 +794,9 @@ impl ServiceHost for WindowsSystemHost {
     }
 
     fn verify_restart_policy(&self) -> Result<(), ServiceError> {
-        let failure =
-            CommandSpec::new("sc", ["qfailure", &self.name], "读取系统服务的失败重启策略");
+        let failure = failure_actions_query(&self.name);
         let stdout = crate::host::read_only(self.runner(), &failure)?;
-        verify_sc_failure_output(&stdout, &self.name)
+        verify_failure_actions(&stdout, &self.name)
     }
 }
 
@@ -820,58 +822,162 @@ impl WindowsSystemHost {
     }
 }
 
-/// 解析 `sc.exe qfailure <name>` 的输出。
+/// 读失败重启策略的命令：**查注册表**，不查 `sc qfailure` 的文字输出。
 ///
-/// 真实输出（⚠️ 中文系统上**标签会被本地化**成「失败操作」之类，
-/// 所以判定只看动作词与延迟数字这两个 ASCII 部分）：
-///
-/// ```text
-/// [SC] QueryServiceConfig2 SUCCESS
-///
-/// SERVICE_NAME: peon-burrow
-///         RESET_PERIOD (in seconds) : 86400
-///         REBOOT_MESSAGE           :
-///         COMMAND_LINE             :
-///         FAILURE_ACTIONS          : RESTART -- DELAY: 5000 ms
-///                                    RESTART -- DELAY: 5000 ms
-/// ```
-///
-/// 判定（`service_name` 只进错误文案，让用户知道是哪个服务）：
-/// 1. 必须出现 `RESTART`（写成 `RUN` 是「跑命令」，不是重启 —— 那不算失败重启策略）；
-/// 2. 重启延迟必须 ≤ 5 秒：`service-lifecycle.md § 5` 要求 5 秒内起来，
-///    否则扩展侧的 watch 重连（1s/2s/5s…）会在用户察觉前还没恢复。
-pub fn verify_sc_failure_output(stdout: &str, service_name: &str) -> Result<(), ServiceError> {
-    let upper = stdout.to_ascii_uppercase();
-    if !upper.contains("RESTART") {
-        return Err(ServiceError::RestartPolicyMissing {
-            name: service_name.to_owned(),
-            expected: format!(
-                "失败后重新启动（sc failure actions=restart/{SYSTEM_RESTART_DELAY_MS}）"
-            ),
-            found: first_interesting_line(stdout),
-        });
+/// 注册表里的 `FailureActions` 是 `REG_BINARY`：语言无关，而且就是 SCM 实际执行的那份数据。
+fn failure_actions_query(name: &str) -> CommandSpec {
+    CommandSpec::new(
+        "reg",
+        [
+            "query".to_owned(),
+            format!(r"HKLM\SYSTEM\CurrentControlSet\Services\{name}"),
+            "/v".to_owned(),
+            "FailureActions".to_owned(),
+        ],
+        "读取系统服务的失败重启策略",
+    )
+}
+
+/// 失败重启策略（从注册表的 `FailureActions` 里解出来的）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureActions {
+    /// 多久没有失败就把失败计数清零（秒）。
+    pub reset_secs: u32,
+    /// 每个动作：`(类型, 延迟毫秒)`；类型 `1` = 重新启动（`SC_ACTION_RESTART`）。
+    pub actions: Vec<(u32, u32)>,
+}
+
+impl FailureActions {
+    /// 是否至少有一个「重新启动」动作（`RUN` 是跑命令、`REBOOT` 是重启机器，都不算）。
+    pub fn restarts(&self) -> bool {
+        self.actions.iter().any(|(kind, _)| *kind == 1)
     }
 
-    // 取第一个 DELAY 的数字（毫秒）
-    let delay_ms = parse_first_delay_ms(&upper);
-    match delay_ms {
-        Some(delay) if delay > SYSTEM_RESTART_DELAY_MS => Err(ServiceError::RestartPolicyMissing {
-            name: service_name.to_owned(),
-            expected: format!(
-                "重启延迟不超过 {SYSTEM_RESTART_DELAY_MS} ms（自更新后要 5 秒内起来）"
-            ),
-            found: format!("延迟 {delay} ms"),
-        }),
-        _ => Ok(()),
+    /// 第一个「重新启动」动作的延迟。
+    pub fn first_restart_delay_ms(&self) -> Option<u32> {
+        self.actions
+            .iter()
+            .find(|(kind, _)| *kind == 1)
+            .map(|(_, delay)| *delay)
+    }
+
+    /// 一行描述（**不含任何本地化文字**，可直接进错误文案）。
+    pub fn describe(&self) -> String {
+        let actions = self
+            .actions
+            .iter()
+            .map(|(kind, delay)| format!("{}/{}ms", action_name(*kind), delay))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("reset={}s, actions=[{actions}]", self.reset_secs)
     }
 }
 
-/// 从 `RESTART -- DELAY: 5000 ms` 里取第一个延迟。
-fn parse_first_delay_ms(upper: &str) -> Option<u64> {
-    let index = upper.find("DELAY:")?;
-    let rest = upper[index + "DELAY:".len()..].trim_start();
-    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
+/// 动作类型 → 名字（与 SCM 的 `SC_ACTION_TYPE` 一致）。
+fn action_name(kind: u32) -> &'static str {
+    match kind {
+        0 => "none",
+        1 => "restart",
+        2 => "reboot",
+        3 => "run",
+        _ => "unknown",
+    }
+}
+
+/// 从 `reg query … /v FailureActions` 的输出里解出失败策略。
+///
+/// ⚠️ 为什么不用 `sc qfailure` 的文字：它的输出**会随系统语言变**。真机上出现过
+/// `[SC] QueryServiceConfig2 成功`（同一台机器另一次跑是 `SUCCESS`），动作行也可能被本地化，
+/// 于是「找 `RESTART` 子串」把已配好的策略误判成「没有策略」，安装直接中止。
+/// 顺带修掉另一个更隐蔽的问题：真机的动作行是 `RESTART -- Delay = 5000 milliseconds.`，
+/// 而解析只认 `DELAY:` → 延迟永远是 `None` → 「≤5 秒」那条约束**从来没有被真正校验过**。
+///
+/// 注册表值的布局（实测 44 字节 / 3 个动作）：
+/// ```text
+/// 0x00 reset_secs (u32)   0x04 reboot 偏移   0x08 command 偏移
+/// 0x0C 动作数             0x10 动作数组偏移（实测 20）
+/// 0x14 起：每个动作 8 字节 = (类型 u32, 延迟毫秒 u32)
+/// ```
+pub fn parse_failure_actions(stdout: &str) -> Option<FailureActions> {
+    let hex = stdout
+        .lines()
+        .find(|line| line.contains("REG_BINARY"))
+        .and_then(|line| line.split_whitespace().last())?;
+    let bytes = decode_hex(hex)?;
+
+    if bytes.len() < 20 {
+        return None;
+    }
+    let reset_secs = u32::from_le_bytes(bytes.get(0..4)?.try_into().ok()?);
+    let count = u32::from_le_bytes(bytes.get(12..16)?.try_into().ok()?) as usize;
+    let start = u32::from_le_bytes(bytes.get(16..20)?.try_into().ok()?) as usize;
+
+    let mut actions = Vec::with_capacity(count);
+    for index in 0..count {
+        let offset = start.checked_add(index.checked_mul(8)?)?;
+        let kind = u32::from_le_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?);
+        let delay = u32::from_le_bytes(bytes.get(offset + 4..offset + 8)?.try_into().ok()?);
+        actions.push((kind, delay));
+    }
+
+    Some(FailureActions {
+        reset_secs,
+        actions,
+    })
+}
+
+/// 十六进制串 → 字节（奇数长度或非法字符一律 `None`）。
+fn decode_hex(text: &str) -> Option<Vec<u8>> {
+    let text = text.trim();
+    if text.is_empty() || !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(text.get(index..index + 2)?, 16).ok())
+        .collect()
+}
+
+/// 校验读到的失败策略。
+///
+/// 判定（`service_name` 只进错误文案，让用户知道是哪个服务）：
+/// 1. 必须有一个 `restart` 动作（`run` 是「跑命令」，不算失败重启策略）；
+/// 2. 重启延迟必须 ≤ 5 秒：`service-lifecycle.md § 5` 要求 5 秒内起来，
+///    否则扩展侧的 watch 重连（1s/2s/5s…）会在用户察觉前还没恢复。
+pub fn verify_failure_actions(stdout: &str, service_name: &str) -> Result<(), ServiceError> {
+    let expected = format!("失败后重新启动（restart/{SYSTEM_RESTART_DELAY_MS}）");
+
+    let Some(actions) = parse_failure_actions(stdout) else {
+        return Err(ServiceError::RestartPolicyMissing {
+            name: service_name.to_owned(),
+            expected,
+            found: first_interesting_line(stdout),
+        });
+    };
+
+    if !actions.restarts() {
+        return Err(ServiceError::RestartPolicyMissing {
+            name: service_name.to_owned(),
+            expected,
+            found: actions.describe(),
+        });
+    }
+
+    match actions.first_restart_delay_ms() {
+        Some(delay) if u64::from(delay) > SYSTEM_RESTART_DELAY_MS => {
+            Err(ServiceError::RestartPolicyMissing {
+                name: service_name.to_owned(),
+                expected: format!("重启延迟不超过 {SYSTEM_RESTART_DELAY_MS} ms"),
+                found: actions.describe(),
+            })
+        }
+        Some(_) => Ok(()),
+        None => Err(ServiceError::RestartPolicyMissing {
+            name: service_name.to_owned(),
+            expected,
+            found: actions.describe(),
+        }),
+    }
 }
 
 /// 从 `sc query` 的输出里读启动类型。
@@ -952,17 +1058,20 @@ mod tests {
         task_xml(&sample_opts())
     }
 
-    /// `sc qfailure` 的输出（中文系统上标签是中文的，但动作与延迟是英文）。
-    const SCFAILURE_FIXTURE: &str = "\
-[SC] QueryServiceConfig2 SUCCESS
-
-SERVICE_NAME: peon-burrow
-        RESET_PERIOD (in seconds) : 86400
-        REBOOT_MESSAGE           :
-        COMMAND_LINE             :
-        FAILURE_ACTIONS          : RESTART -- DELAY: 5000 ms
-                                   RESTART -- DELAY: 5000 ms
+    /// `reg query … /v FailureActions` 的**真机**输出（在装好系统服务的机器上导出）。
+    ///
+    /// 解码：reset=86400 秒，3 个动作都是 `(restart, 5000ms)`。
+    /// 不用 `sc qfailure` 的文字：它会随系统语言变（同一台机器上出现过中文的 `成功`）。
+    const FAILURE_FIXTURE: &str = r"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\peon-burrow
+    FailureActions    REG_BINARY    8051010000000000000000000300000014000000010000008813000001000000881300000100000088130000
 ";
+
+    /// 拼一个 `reg query` 形状的夹具（只给 hex，省得每次手写整行）。
+    fn reg_binary_fixture(hex: &str) -> String {
+        format!(
+            "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\peon-burrow\n    FailureActions    REG_BINARY    {hex}\n"
+        )
+    }
 
     #[test]
     fn task_xml_carries_hidden_logon_and_failure_restart() {
@@ -1275,7 +1384,7 @@ SERVICE_NAME: peon-burrow
             .expect("") // sc create
             .expect("") // sc description
             .expect("") // sc failure
-            .expect(SCFAILURE_FIXTURE); // 自检：sc qfailure
+            .expect(FAILURE_FIXTURE); // 自检：sc qfailure
 
         let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
         let mut opts = sample_opts();
@@ -1296,8 +1405,8 @@ SERVICE_NAME: peon-burrow
         );
         assert!(lines[2].contains("actions= restart/5000/restart/5000/restart/5000"));
         assert!(
-            lines[3].contains("sc qfailure"),
-            "自检要读回来：{}",
+            lines[3].contains("reg query") && lines[3].contains("FailureActions"),
+            "自检要读回注册表里的 FailureActions（`sc qfailure` 的文字会随语言变）：{}",
             lines[3]
         );
     }
@@ -1359,7 +1468,7 @@ SERVICE_NAME: peon-burrow
             .expect("") // sc create
             .expect("") // sc description
             .expect("") // sc failure
-            .expect(SCFAILURE_FIXTURE); // sc qfailure
+            .expect(FAILURE_FIXTURE); // sc qfailure
         let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
         let mut opts = sample_opts();
         opts.level = ServiceLevel::System;
@@ -1454,16 +1563,20 @@ SERVICE_NAME: peon-burrow
 
     #[test]
     fn system_restart_policy_inspection() {
-        verify_sc_failure_output(SCFAILURE_FIXTURE, "peon-burrow")
-            .expect("有 RESTART 且有 5000ms 延迟就该通过");
+        verify_failure_actions(FAILURE_FIXTURE, "peon-burrow").expect("三个 restart/5000 就该通过");
 
-        // 只有 RUN（跑命令）不算重启
-        let run_only = "FAILURE_ACTIONS : RUN -- DELAY: 5000 ms";
-        assert!(verify_sc_failure_output(run_only, "peon-burrow").is_err());
+        // 只有 RUN（跑命令）不算重启：类型 3 是 run
+        let run_only =
+            reg_binary_fixture("80510100000000000000000001000000140000000300000088130000");
+        let error = verify_failure_actions(&run_only, "peon-burrow").expect_err("run 不算重启");
+        assert!(
+            error.to_string().contains("run/5000ms"),
+            "错误里要写清读到的是什么动作：{error}"
+        );
 
-        // 延迟太长：自更新后的重启要在用户察觉前完成
-        let slow = "FAILURE_ACTIONS : RESTART -- DELAY: 60000 ms";
-        let error = verify_sc_failure_output(slow, "peon-burrow").expect_err("延迟 60 秒太慢");
+        // 延迟太长：自更新后的重启要在用户察觉前完成（60000ms = 0xEA60）
+        let slow = reg_binary_fixture("80510100000000000000000001000000140000000100000060EA0000");
+        let error = verify_failure_actions(&slow, "peon-burrow").expect_err("延迟 60 秒太慢");
         assert!(
             error.to_string().contains("60000"),
             "要报出读到的实际值：{error}"
@@ -1473,9 +1586,9 @@ SERVICE_NAME: peon-burrow
             "要点名是哪个服务：{error}"
         );
 
-        // 完全没有 failure actions
-        let none = "[SC] QueryServiceConfig2 SUCCESS\n\nSERVICE_NAME: peon-burrow\n";
-        let error = verify_sc_failure_output(none, "peon-burrow").expect_err("没有策略要报错");
+        // 注册表里根本没有 FailureActions 这个值
+        let none = "错误: 系统找不到指定的注册表项或值。";
+        let error = verify_failure_actions(none, "peon-burrow").expect_err("没有策略要报错");
         assert!(error.action().contains("install"), "{}", error.action());
     }
 

@@ -1,14 +1,15 @@
-# 每次推送/PR：格式、lint、测试、文档、MSRV、布局守卫。
+# 被 release.yaml 调用的**可复用工作流**（`workflow_call`）。
 #
-# ⚠️ 这里**不装** rust-toolchain.toml 之类会钉死工具链的东西：MSRV job 必须能真的用
+# ⚠️ 这里刻意**没有** push / pull_request 触发：本仓库只有一个自动化入口
+# —— `.github/workflows/release.yaml`（只吃 `v*.*.*` tag）。
+# 检查发生在发版那一刻（tag 推送），而不是每次推送。
+#
+# ⚠️ 也**不装** rust-toolchain.toml 之类会钉死工具链的东西：MSRV job 必须能真的用
 # 1.88 编译，否则「我声明支持 1.88」就是一句空话。
 name: ci
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always

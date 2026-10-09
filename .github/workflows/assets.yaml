@@ -1,16 +1,17 @@
-# 打 tag 时：三平台构建 → 打包 → 校验和 → 传 Release → 生成 latest.json
+# 被 release.yaml 调用的**可复用工作流**（`workflow_call`）：三平台构建 → 打包 → 校验和
+# → 传 GitHub Release → 生成 latest.json。
 #
 # 产物命名是**契约**（`ai-docs/release.md § 2.2`）：
-#   peon-burrow-<target>.tar.gz / .zip   ← 自更新下载的就是它
-#   burrow-<target>[.exe]                ← 桌面端 sidecar 直接取这个原始二进制
-# 改了名字 = 老版本再也找不到更新，别改。
+#   peon-burrow-<target>.tar.gz / .zip   ← 人手动下载用
+#   burrow-<target>[.exe]                ← **自更新下载的就是它**（update crate 不解压）
+#   latest.json                          ← 清单：字段 camelCase、资产指裸二进制
+# 改了名字（或让清单指向压缩包）= 老版本再也找不到更新，别改。
 name: assets
 
 on:
-  push:
-    tags: ['v*']
-  workflow_dispatch:
+  workflow_call:
 
+# 上传到 Release 需要写权限；被调用时不可能超过调用方给的上限
 permissions:
   contents: write
 
@@ -60,9 +61,9 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  publish:
+  release:
     name: 发布 Release（含 latest.json）
-    needs: build
+    needs: [build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

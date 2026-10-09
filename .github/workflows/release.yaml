@@ -1,28 +1,36 @@
-# 发到 crates.io。
+# **本仓库唯一的自动化入口**：只由 `v*.*.*` tag 触发。
+#
+#   1) checks —— 复用 ci.yaml（三平台 lint/test/doc + MSRV + 布局守卫 + semver）
+#   2) verify —— tag 必须等于 workspace 版本 + 依赖顺序自检
+#   3) assets —— 复用 assets.yaml（五个目标的产物 + latest.json + GitHub Release）
+#   4) crates —— dry-run 之后按序发到 crates.io
+#
+# 没有 push / pull_request / workflow_dispatch 入口：检查发生在发版那一刻。
+# 失败时**不要移动 tag** —— 修好之后从 Actions 页面重跑失败的 job 即可
+# （重跑不需要重新触发，所以 tag 不用动）。
 #
 # 顺序是**硬约束**（`ai-docs/decisions/adr-0009-crates-io-publishing.md`）：
 #   protocol → core → ipc-types → ipc → service → update → peon-burrow
-# 后一个依赖前一个，而 crates.io 在索引更新前会拒收 —— 所以每个包发完都要等它可见。
-# 想让它一条命令搞定可以换 harbor 编排，但**首次发版必须人工按序**（不可逆）。
 name: release
 
 on:
   push:
-    tags: ['v*']
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 只做 dry-run（不真的发）
-        type: boolean
-        default: true
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
 
 env:
   CARGO_TERM_COLOR: always
   CRATES: peon-burrow-protocol peon-burrow-core peon-burrow-ipc-types peon-burrow-ipc peon-burrow-service peon-burrow-update peon-burrow
 
 jobs:
+  checks:
+    name: 发版前检查
+    uses: ./.github/workflows/ci.yaml
+
   verify:
-    name: 版本一致性
+    name: 版本与依赖顺序
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,9 +53,17 @@ jobs:
             cargo tree -p "$crate" --depth 1 | grep 'peon-burrow' || true
           done
 
-  dry-run:
+  assets:
+    name: 构建产物与 Release
+    needs: [checks, verify]
+    uses: ./.github/workflows/assets.yaml
+    # 被调用的工作流要往 Release 里传文件，权限必须在这里显式给
+    permissions:
+      contents: write
+
+  crates-dry-run:
     name: cargo publish --dry-run
-    needs: verify
+    needs: [checks, verify]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,10 +77,9 @@ jobs:
             cargo publish -p "$crate" --dry-run --locked
           done
 
-  publish:
+  crates-publish:
     name: 发布到 crates.io
-    needs: dry-run
-    if: github.event_name == 'push' || inputs.dry_run == false
+    needs: [crates-dry-run]
     runs-on: ubuntu-latest
     environment: crates-io
     steps:

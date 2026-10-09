@@ -11,6 +11,8 @@
 #
 # 顺序是**硬约束**（`ai-docs/decisions/adr-0009-crates-io-publishing.md`）：
 #   protocol → core → ipc-types → ipc → service → update → peon-burrow
+#
+# ⚠️ 除注释外**不要写中文**（含 job/step 的 name 与 echo 文案）。
 name: release
 
 on:
@@ -26,24 +28,24 @@ env:
 
 jobs:
   checks:
-    name: 发版前检查
+    name: pre-release checks
     uses: ./.github/workflows/ci.yaml
 
   verify:
-    name: 版本与依赖顺序
+    name: version and dependency order
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: tag 必须等于 workspace 版本
+      - name: tag must match the workspace version
         shell: bash
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           version="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
           echo "tag=$tag workspace=$version"
-          [ "$tag" = "$version" ] || { echo "::error::tag 与 Cargo.toml 版本不一致"; exit 1; }
-      - name: 依赖顺序自检
+          [ "$tag" = "$version" ] || { echo "::error::tag does not match the Cargo.toml version"; exit 1; }
+      - name: dependency order self-check
         shell: bash
         run: |
           set -euo pipefail
@@ -54,7 +56,7 @@ jobs:
           done
 
   assets:
-    name: 构建产物与 Release
+    name: assets and release
     needs: [checks, verify]
     uses: ./.github/workflows/assets.yaml
     # 被调用的工作流要往 Release 里传文件，权限必须在这里显式给
@@ -62,7 +64,7 @@ jobs:
       contents: write
 
   crates-dry-run:
-    name: cargo publish --dry-run
+    name: cargo publish dry run
     needs: [checks, verify]
     runs-on: ubuntu-latest
     steps:
@@ -78,7 +80,7 @@ jobs:
           done
 
   crates-publish:
-    name: 发布到 crates.io
+    name: publish to crates.io
     needs: [crates-dry-run]
     runs-on: ubuntu-latest
     environment: crates-io
@@ -86,7 +88,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: 按序发布
+      - name: publish in dependency order
         shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -97,8 +99,8 @@ jobs:
             # 索引有延迟：失败就等一会儿重试，而不是直接红
             for attempt in 1 2 3 4 5; do
               if cargo publish -p "$crate" --locked; then break; fi
-              echo "第 $attempt 次失败，等 30 秒后重试（多半是索引还没更新）"
+              echo "attempt $attempt failed, retrying in 30s (the registry index is usually just lagging)"
               sleep 30
-              [ "$attempt" -lt 5 ] || { echo "::error::$crate 发布失败"; exit 1; }
+              [ "$attempt" -lt 5 ] || { echo "::error::failed to publish $crate"; exit 1; }
             done
           done

@@ -6,6 +6,8 @@
 #   burrow-<target>[.exe]                ← **自更新下载的就是它**（update crate 不解压）
 #   latest.json                          ← 清单：字段 camelCase、资产指裸二进制
 # 改了名字（或让清单指向压缩包）= 老版本再也找不到更新，别改。
+#
+# ⚠️ 除注释外**不要写中文**（含 job/step 的 name 与 echo 文案）。
 name: assets
 
 on:
@@ -42,15 +44,15 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: 构建
+      - name: build
         run: cargo build --release --locked --target ${{ matrix.target }} -p peon-burrow
 
-      - name: 打包（Windows）
+      - name: package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/package-release.ps1 -Target "${{ matrix.target }}"
 
-      - name: 打包（Unix）
+      - name: package (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: ./scripts/package-release.sh "${{ matrix.target }}"
@@ -62,7 +64,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: 发布 Release（含 latest.json）
+    name: publish release and latest.json
     needs: [build]
     runs-on: ubuntu-latest
     steps:
@@ -73,7 +75,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: 生成 latest.json
+      - name: generate latest.json
         shell: bash
         run: |
           set -euo pipefail
@@ -86,7 +88,7 @@ jobs:
           # 守住一条契约：自更新不解压，清单里的资产必须是裸二进制。
           # 这条如果漏了，用户侧的表现是「更新永远失败」，而这里是最容易发现的地方。
           if grep -Eq '"(name|target)": *"[^"]*\.(zip|tar\.gz|tgz)"' dist/latest.json; then
-            echo "::error::latest.json 指向了压缩包；自更新不会解压，必须指向裸二进制"
+            echo "::error::latest.json points at an archive; the updater does not unpack archives, the asset must be a raw binary"
             exit 1
           fi
 

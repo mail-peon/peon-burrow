@@ -6,6 +6,8 @@
 #
 # ⚠️ 也**不装** rust-toolchain.toml 之类会钉死工具链的东西：MSRV job 必须能真的用
 # 1.88 编译，否则「我声明支持 1.88」就是一句空话。
+#
+# ⚠️ 除注释外**不要写中文**（含 job/step 的 name 与 echo 文案）：CI 日志保持英文。
 name: ci
 
 on:
@@ -33,13 +35,13 @@ jobs:
       - name: fmt
         run: cargo fmt --all --check
 
-      - name: clippy（默认 feature）
+      - name: clippy (default features)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: clippy（关掉 imap-watch）
+      - name: clippy (imap-watch disabled)
         run: cargo clippy -p peon-burrow-core --all-targets --no-default-features -- -D warnings
 
-      - name: clippy（其它平台的目标 —— 非本平台的代码本机永远编不到）
+      - name: clippy (other platforms' targets)
         if: matrix.os == 'ubuntu-latest'
         run: |
           rustup target add x86_64-pc-windows-msvc x86_64-apple-darwin
@@ -65,12 +67,12 @@ jobs:
         run: cargo build --workspace --locked
 
   guards:
-    name: 布局守卫
+    name: layout guards
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: 跑 ai-docs/modules.md § 12 的守卫
+      - name: run the layout guards defined in ai-docs/modules.md section 12
         shell: bash
         run: |
           set -euo pipefail
@@ -78,25 +80,25 @@ jobs:
 
           # L1：稳定层不许有 IO 依赖
           if cargo tree -p peon-burrow-protocol | grep -Eq 'tokio|rustls|interprocess'; then
-            echo "::error::L1 违规：peon-burrow-protocol 引入了 IO 依赖"; fail=1
+            echo "::error::L1 violation: peon-burrow-protocol must not depend on IO crates"; fail=1
           fi
 
           # L2：类型层不许有传输依赖
           if cargo tree -p peon-burrow-ipc-types | grep -Eq 'tokio|interprocess'; then
-            echo "::error::L2 违规：peon-burrow-ipc-types 引入了传输依赖"; fail=1
+            echo "::error::L2 violation: peon-burrow-ipc-types must not depend on transport crates"; fail=1
           fi
 
           # L1'：core 不许依赖产品层或其它上层 crate
           if cargo tree -p peon-burrow-core | grep -Eq 'peon-burrow v|peon-burrow-ipc|peon-burrow-service|peon-burrow-update'; then
-            echo "::error::L1 违规：peon-burrow-core 依赖了上层 crate"; fail=1
+            echo "::error::L1 violation: peon-burrow-core must not depend on the upper layers"; fail=1
           fi
 
           # L3：service / update 不许依赖引擎（它们要能单独复用）
           if cargo tree -p peon-burrow-service | grep -Eq 'peon-burrow-core|peon-burrow v'; then
-            echo "::error::L3 违规：peon-burrow-service 依赖了引擎"; fail=1
+            echo "::error::L3 violation: peon-burrow-service must stay independent of the engine"; fail=1
           fi
           if cargo tree -p peon-burrow-update | grep -Eq 'peon-burrow-core|peon-burrow-ipc|peon-burrow-service|peon-burrow v'; then
-            echo "::error::L3 违规：peon-burrow-update 依赖了其它上层 crate"; fail=1
+            echo "::error::L3 violation: peon-burrow-update must stay independent of the upper layers"; fail=1
           fi
 
           # 版本脚本必须真的能跑（「改了 workspace 版本、漏了内部依赖版本」是最常见的发包事故：
@@ -104,31 +106,58 @@ jobs:
           ./scripts/bump-version.sh 9.9.9 --dry-run > /dev/null
           ./scripts/bump-version.sh 0.0.0 --dry-run > /dev/null
           if ! git diff --exit-code -- Cargo.toml > /dev/null; then
-            echo "::error::bump-version.sh 在 --dry-run 下改动了 Cargo.toml"; fail=1
+            echo "::error::bump-version.sh modified Cargo.toml during --dry-run"; fail=1
           fi
 
           # L5：bin 必须够薄
           lines=$(wc -l < crates/peon-burrow/src/main.rs)
           if [ "$lines" -gt 60 ]; then
-            echo "::error::L5 违规：main.rs 有 $lines 行（上限 60）"; fail=1
+            echo "::error::L5 violation: crates/peon-burrow/src/main.rs has $lines lines (limit is 60)"; fail=1
           fi
 
           # 约定 C5：`std::sync::Mutex` 只允许在**非 async、且不跨 await 持锁**的地方出现，
           # 且每一处都必须带 `C5-EXCEPTION` 说明。数量对不上就说明有人新加了一处没留痕的锁。
           usages=$(grep -rn 'std::sync::Mutex' crates --include='*.rs' | grep -vc 'C5-EXCEPTION' || true)
           markers=$(grep -rn 'C5-EXCEPTION' crates --include='*.rs' | wc -l | tr -d ' ')
-          echo "std 锁用法 $usages 处 / 豁免标记 $markers 处"
+          echo "std sync mutex usages: $usages / C5-EXCEPTION notes: $markers"
           if [ "$usages" -gt "$markers" ]; then
-            echo "::error::约定 C5：有 std::sync::Mutex 没有 C5-EXCEPTION 说明（async 代码里跨 await 持锁会让运行时线程卡住）"
+            echo "::error::C5 violation: a std::sync::Mutex usage has no C5-EXCEPTION note (holding a std lock across await blocks the runtime thread)"
             grep -rn 'std::sync::Mutex' crates --include='*.rs' | grep -v 'C5-EXCEPTION'
             fail=1
           fi
 
           if [ "$fail" -ne 0 ]; then exit 1; fi
-          echo "全部守卫通过"
+          echo "all layout guards passed"
+
+      - name: workflow hygiene (english outside comments, no hash in names)
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          # 规则一：除注释外不许有中文（整行注释与行尾注释都不算代码）
+          # 规则二：name 里不能有 `#` —— GitHub 会把它当注释，后面的字直接消失
+          for file in .github/workflows/*.yaml .github/workflows/*.yml; do
+            [ -f "$file" ] || continue
+
+            if sed -E 's/[[:space:]]+#.*$//' "$file" \
+               | grep -vE '^[[:space:]]*#' \
+               | grep -qP '[\x{4e00}-\x{9fff}]'; then
+              echo "::error::$file contains CJK outside comments; keep CI logs in english"
+              sed -E 's/[[:space:]]+#.*$//' "$file" | grep -vE '^[[:space:]]*#' | grep -nP '[\x{4e00}-\x{9fff}]'
+              fail=1
+            fi
+
+            if grep -nE '^[[:space:]]*(-[[:space:]]*)?name:.*#' "$file" > /dev/null; then
+              echo "::error::$file has '#' inside a name: (GitHub treats it as a comment and truncates it)"
+              grep -nE '^[[:space:]]*(-[[:space:]]*)?name:.*#' "$file"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "workflow files look good"
 
   semver:
-    name: semver 检查（稳定层）
+    name: semver checks (stable layers)
     runs-on: ubuntu-latest
     continue-on-error: true # 首次发版前没有基线，允许失败；有基线后应当收紧
     steps:
@@ -136,7 +165,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-semver-checks --locked
-      - name: 稳定层与上一版比对
+      - name: compare the stable layers against the previous release
         run: |
           for krate in peon-burrow-protocol peon-burrow-ipc-types; do
             cargo semver-checks check-release -p "$krate" || true

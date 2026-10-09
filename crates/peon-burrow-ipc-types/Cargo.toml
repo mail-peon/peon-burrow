@@ -1,0 +1,17 @@
+[package]
+name = "peon-burrow-ipc-types"
+description = "Control plane types shared by the peon-burrow service and its clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["relay", "ipc", "control-plane", "types"]
+categories = ["network-programming"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

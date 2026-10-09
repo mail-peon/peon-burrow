@@ -1,0 +1,19 @@
+[package]
+name = "peon-burrow-service"
+description = "Cross platform service installation autostart and status for a local daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["service", "systemd", "launchd", "windows-service", "autostart"]
+categories = ["command-line-utilities", "os"]
+
+[dependencies]
+peon-burrow-ipc-types = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sysinfo = { workspace = true }
+
+[lints]
+workspace = true

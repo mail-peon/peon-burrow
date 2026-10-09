@@ -1,0 +1,37 @@
+[package]
+name = "peon-burrow-update"
+description = "Self update for a local tool: manifest, verification, replacement and restart"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["self-update", "release", "checksum", "signature", "updater"]
+categories = ["command-line-utilities"]
+
+# ⚠️ 本 crate 是**独立**的稳定层：不许依赖 peon-burrow-core / -ipc-types / -service / peon-burrow
+# （`ai-docs/modules.md § 12` 的 C9/L1 守卫）。
+#
+# TLS 只用 ring（workspace 里 `rustls` / `tokio-rustls` 都已经配好 `default-features = false`
+# + `ring`）：**绝不引入 aws-lc-rs**（它需要 C 工具链 / nasm，Windows 上会直接构建失败）。
+# 也刻意不用 reqwest：它 0.13 的 `rustls` feature 会拉 aws-lc-rs，而我们只需要一个
+# 「GET 一坨字节」的最小实现（见 `src/download.rs`）。
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `serde` feature：清单里的 `version` 直接用 `semver::Version` 反序列化（不自己解析字符串）
+semver = { workspace = true, features = ["serde"] }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+webpki-roots = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

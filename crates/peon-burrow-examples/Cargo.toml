@@ -1,0 +1,20 @@
+[package]
+name = "peon-burrow-examples"
+description = "Runnable examples for embedding the peon-burrow relay engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+peon-burrow-core = { workspace = true }
+peon-burrow-protocol = { workspace = true }
+peon-burrow-ipc-types = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

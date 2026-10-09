@@ -1,0 +1,24 @@
+[package]
+name = "peon-burrow-ipc"
+description = "Control plane transport and client for a running peon-burrow relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["relay", "ipc", "named-pipe", "unix-socket"]
+categories = ["network-programming"]
+
+[dependencies]
+peon-burrow-ipc-types = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

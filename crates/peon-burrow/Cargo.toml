@@ -1,0 +1,56 @@
+[package]
+name = "peon-burrow"
+description = "WebSocket to TCP/TLS relay with a service installer and self update, plus the burrow CLI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["relay", "websocket", "tcp", "imap", "cli"]
+categories = ["command-line-utilities", "network-programming"]
+
+[[bin]]
+name = "burrow"
+path = "src/main.rs"
+
+[lib]
+name = "peon_burrow"
+path = "src/lib.rs"
+
+[features]
+default = ["imap-watch"]
+imap-watch = ["peon-burrow-core/imap-watch"]
+
+[dependencies]
+peon-burrow-protocol = { workspace = true }
+peon-burrow-core = { workspace = true }
+peon-burrow-ipc-types = { workspace = true }
+peon-burrow-ipc = { workspace = true }
+peon-burrow-update = { workspace = true }
+peon-burrow-service = { workspace = true }
+semver = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true }
+directories = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-appender = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+rustls = { workspace = true }
+hex = { workspace = true }
+
+# crate 名与 bin 名不同：cargo-binstall 需要这个才能找到产物
+[package.metadata.binstall]
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

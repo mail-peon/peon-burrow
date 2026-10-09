@@ -451,6 +451,19 @@ fn token(json: bool) -> Result<ExitCode, AppError> {
 /// ⚠️ 安装时会**先把当前可执行文件复制到安装目录**再注册：直接注册临时目录里的 exe
 /// （例如刚 `cargo run` 出来的那个）会在目录被清理后指向一个不存在的路径 ——
 /// 用户看到的是「重启之后服务起不来」。
+/// 服务**实际**装在哪个级别：配置里的级别优先，没装就看另一级。
+///
+/// 这个函数是「装/卸/启/停/自启」的级别入口。用配置里的级别直接操作会出这种事：
+/// 装了系统服务、配置仍是默认的用户级 → 点「卸载」卸掉一个不存在的用户级服务，
+/// 命令成功退出（`{"installed": false}`），系统服务原地不动（真机踩过）。
+fn effective_level(config: &Config) -> peon_burrow_ipc_types::ServiceLevel {
+    let configured = config.service.level;
+    match status_at_either_level(configured) {
+        Ok(status) if status.installed => status.level.unwrap_or(configured),
+        _ => configured,
+    }
+}
+
 /// 读服务状态：先问配置里的级别，**没装再问另一级**。
 ///
 /// 只问默认级别的话，「装成系统服务」的人在界面上会永远看到「未安装」——
@@ -488,7 +501,9 @@ async fn service_command(
     command: ServiceCommand,
     json: bool,
 ) -> Result<ExitCode, AppError> {
-    let default_level = config.service.level;
+    // ⚠️ 不是 `config.service.level`：装了系统服务的人，卸载/启停/自启都必须针对
+    // 实际存在的那一级，否则会去操作一个不存在的用户级服务（真机踩过）。
+    let default_level = effective_level(config);
 
     match command {
         ServiceCommand::Status => {

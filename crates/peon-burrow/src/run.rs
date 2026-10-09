@@ -451,6 +451,37 @@ fn token(json: bool) -> Result<ExitCode, AppError> {
 /// ⚠️ 安装时会**先把当前可执行文件复制到安装目录**再注册：直接注册临时目录里的 exe
 /// （例如刚 `cargo run` 出来的那个）会在目录被清理后指向一个不存在的路径 ——
 /// 用户看到的是「重启之后服务起不来」。
+/// 读服务状态：先问配置里的级别，**没装再问另一级**。
+///
+/// 只问默认级别的话，「装成系统服务」的人在界面上会永远看到「未安装」——
+/// 而桌面端又靠 `status.level` 决定装/卸/启停该找哪一级，于是点「安装」会去建一个
+/// 用户级服务，和已存在的系统服务打架（真机踩过）。
+fn status_at_either_level(
+    configured: peon_burrow_ipc_types::ServiceLevel,
+) -> Result<peon_burrow_ipc_types::ServiceStatus, AppError> {
+    let status = peon_burrow_service::native_for(configured)
+        .status()
+        .map_err(service_error)?;
+    if status.installed {
+        return Ok(status);
+    }
+
+    // 没装：另一级可能装着（用户级 ↔ 系统级）
+    let other = match configured {
+        peon_burrow_ipc_types::ServiceLevel::User => peon_burrow_ipc_types::ServiceLevel::System,
+        peon_burrow_ipc_types::ServiceLevel::System => peon_burrow_ipc_types::ServiceLevel::User,
+    };
+    let other_status = peon_burrow_service::native_for(other)
+        .status()
+        .map_err(service_error)?;
+    if other_status.installed {
+        return Ok(other_status);
+    }
+
+    // 两级都没有：回答默认级别的那份（`level` 字段用于界面提示）
+    Ok(status)
+}
+
 async fn service_command(
     _paths: &Paths,
     config: &Config,
@@ -461,8 +492,7 @@ async fn service_command(
 
     match command {
         ServiceCommand::Status => {
-            let host = peon_burrow_service::native_for(default_level);
-            let status = host.status().map_err(service_error)?;
+            let status = status_at_either_level(default_level)?;
             if json {
                 print_json(&serde_json::to_value(&status).unwrap_or_default());
             } else {
@@ -624,10 +654,8 @@ fn parse_on_off(value: &str) -> Result<bool, AppError> {
 /// 服务状态查询（控制面用）：每次都现问服务管理器，不缓存。
 pub fn service_status(config: &Config) -> ServiceStatus {
     let level = config.service.level;
-    let name = config.service.name.clone();
-    peon_burrow_service::native_for(level)
-        .status()
-        .unwrap_or_else(|_| ServiceStatus::not_installed(name))
+    // 与 `service status` 一致：两级都看（装了系统服务的人不该显示「未安装」）
+    status_at_either_level(level).unwrap_or_else(|_| ServiceStatus::not_installed("peon-burrow"))
 }
 
 /// 平台上的可执行文件名。

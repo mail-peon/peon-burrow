@@ -703,9 +703,22 @@ impl ServiceHost for WindowsSystemHost {
             "写系统服务描述",
         );
 
-        Plan::new()
-            .command(create)
-            .command(description)
+        // ⚠️ **幂等**：服务已经存在时 `sc create` 报 1073（真机踩过 —— 上一次失败留下的
+        // 半成品会把后面每一次重装都挡住，用户只能自己去 `sc delete`）。
+        // 已存在就跳过创建，只把描述/失败策略/启动补齐到期望状态。
+        let exists = self.exists()?;
+        let mut plan = Plan::new();
+        if !exists {
+            plan = plan.command(create);
+        } else {
+            tracing::info!(
+                event = "service.install",
+                mode = "system",
+                "服务已存在，跳过创建"
+            );
+        }
+
+        plan.command(description)
             .command(failure)
             .execute(self.runner())?;
 
@@ -801,6 +814,16 @@ impl ServiceHost for WindowsSystemHost {
 }
 
 impl WindowsSystemHost {
+    /// 服务注册过没有（`sc query` 对没装的服务返回 1060）。
+    fn exists(&self) -> Result<bool, ServiceError> {
+        let query = CommandSpec::new("sc", ["query", &self.name], "检查系统服务是否存在");
+        match crate::host::read_only(self.runner(), &query) {
+            Ok(stdout) => Ok(stdout.to_ascii_uppercase().contains("SERVICE_NAME")),
+            // 查询失败（1060 = 没装）不算错误：这正是「不存在」的答案
+            Err(_) => Ok(false),
+        }
+    }
+
     /// `sc failure` 命令（写失败重启策略）。
     fn failure_command(&self) -> CommandSpec {
         CommandSpec::new(
@@ -1381,10 +1404,11 @@ mod tests {
     #[test]
     fn system_install_writes_failure_actions_and_self_checks() {
         let runner = FakeRunner::new()
+            .expect("") // sc query（存在性检查：空输出 = 没装）
             .expect("") // sc create
             .expect("") // sc description
             .expect("") // sc failure
-            .expect(FAILURE_FIXTURE); // 自检：sc qfailure
+            .expect(FAILURE_FIXTURE); // 自检：读注册表
 
         let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
         let mut opts = sample_opts();
@@ -1393,21 +1417,21 @@ mod tests {
         host.install(&opts).expect("install");
 
         let lines = runner.mutations().command_lines();
-        assert!(lines[0].contains("sc create peon-burrow"));
+        assert!(lines[1].contains("sc create peon-burrow"));
         assert!(
-            lines[0].contains("start= auto"),
+            lines[1].contains("start= auto"),
             "开机启动 = auto：{}",
             lines[0]
         );
         assert!(
-            lines[2].contains("sc failure peon-burrow"),
+            lines[3].contains("sc failure peon-burrow"),
             "sc create 写不了 failure actions，必须紧跟 sc failure：{lines:?}"
         );
-        assert!(lines[2].contains("actions= restart/5000/restart/5000/restart/5000"));
+        assert!(lines[3].contains("actions= restart/5000/restart/5000/restart/5000"));
         assert!(
-            lines[3].contains("reg query") && lines[3].contains("FailureActions"),
+            lines[4].contains("reg query") && lines[4].contains("FailureActions"),
             "自检要读回注册表里的 FailureActions（`sc qfailure` 的文字会随语言变）：{}",
-            lines[3]
+            lines[4]
         );
     }
 
@@ -1465,10 +1489,11 @@ mod tests {
     #[test]
     fn sc_options_are_passed_as_separate_arguments() {
         let runner = FakeRunner::new()
+            .expect("") // sc query（存在性检查）
             .expect("") // sc create
             .expect("") // sc description
             .expect("") // sc failure
-            .expect(FAILURE_FIXTURE); // sc qfailure
+            .expect(FAILURE_FIXTURE); // 读注册表
         let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
         let mut opts = sample_opts();
         opts.level = ServiceLevel::System;
@@ -1479,7 +1504,8 @@ mod tests {
         assert_sc_options_are_separate(&commands);
 
         // 正向断言：`start=` 与 `auto` 是相邻的两个参数
-        let create = commands.first().expect("sc create");
+        // （第一条是存在性检查 `sc query`，所以 create 是第二条）
+        let create = commands.get(1).expect("sc create");
         let index = create
             .args
             .iter()
@@ -1524,6 +1550,32 @@ mod tests {
                 Some(expected)
             );
         }
+    }
+
+    #[test]
+    fn installing_an_existing_system_service_skips_create() {
+        // `sc create` 对已存在的服务报 1073 —— 上一次失败留下的半成品会挡住每一次重装
+        //（真机踩过：用户只能自己去 `sc delete`）。存在就跳过创建，只把其余配置补齐。
+        let runner = FakeRunner::new()
+            .expect("SERVICE_NAME: peon-burrow\n        STATE              : 4  RUNNING")
+            .expect("") // sc description
+            .expect("") // sc failure
+            .expect(FAILURE_FIXTURE); // 自检
+        let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
+        let mut opts = sample_opts();
+        opts.level = ServiceLevel::System;
+        opts.autostart = Autostart::Boot;
+        host.install(&opts).expect("install");
+
+        let lines = runner.mutations().command_lines();
+        assert!(
+            !lines.iter().any(|line| line.contains("sc create")),
+            "已存在就不能再 create：{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("sc failure")),
+            "失败策略仍要写：{lines:?}"
+        );
     }
 
     #[test]

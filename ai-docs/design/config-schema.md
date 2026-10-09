@@ -23,9 +23,15 @@ TOML。路径可用 `--config <path>` 覆盖；默认位置：
 
 | 平台 | 路径 |
 | --- | --- |
-| Windows | `%APPDATA%\peon-burrow\relay.toml` |
+| Windows | `%APPDATA%\peon-burrow\config\relay.toml` |
 | macOS | `~/Library/Application Support/peon-burrow/relay.toml` |
 | Linux | `~/.config/peon-burrow/relay.toml` |
+
+> ⚠️ Windows 上多一层 `config\`：路径由 `directories::ProjectDirs` 推出来，它在 Windows 会给
+> `config_dir()` 追加 `config`、给 `data_local_dir()` 追加 `data`（macOS / Linux 没有这一层）。
+> 这条是**实证**出来的，不是猜的：`burrow doctor -v` 会把它读到的确切路径打出来。
+> 同一套规则也决定了发现文件的位置（`<data-dir>\control.json`），桌面端必须用同样的推导
+> （`peon-hall` 仓库 `src-tauri/src/discovery.rs`）。
 
 > **默认值的唯一来源是 `peon-burrow-core`**（L3）：下面 TOML 里出现的值只是「核心默认值」的展示 ——
 > 配置结构里每个字段都是 `Option<T>`，缺省即落到 core 的 `RelayOptions::default()`。**改默认值只改一处。**

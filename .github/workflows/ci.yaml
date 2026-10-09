@@ -1,0 +1,134 @@
+# 每次推送/PR：格式、lint、测试、文档、MSRV、布局守卫。
+#
+# ⚠️ 这里**不装** rust-toolchain.toml 之类会钉死工具链的东西：MSRV job 必须能真的用
+# 1.88 编译，否则「我声明支持 1.88」就是一句空话。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --all --check
+
+      - name: clippy（默认 feature）
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: clippy（关掉 imap-watch）
+        run: cargo clippy -p peon-burrow-core --all-targets --no-default-features -- -D warnings
+
+      - name: clippy（其它平台的目标 —— 非本平台的代码本机永远编不到）
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          rustup target add x86_64-pc-windows-msvc x86_64-apple-darwin
+          cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+          cargo clippy --workspace --all-targets --target x86_64-apple-darwin -- -D warnings
+
+      - name: test
+        run: cargo test --workspace --locked
+
+      - name: doc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
+  msrv:
+    name: msrv (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build --workspace --locked
+
+  guards:
+    name: 布局守卫
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: 跑 ai-docs/modules.md § 12 的守卫
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+
+          # L1：稳定层不许有 IO 依赖
+          if cargo tree -p peon-burrow-protocol | grep -Eq 'tokio|rustls|interprocess'; then
+            echo "::error::L1 违规：peon-burrow-protocol 引入了 IO 依赖"; fail=1
+          fi
+
+          # L2：类型层不许有传输依赖
+          if cargo tree -p peon-burrow-ipc-types | grep -Eq 'tokio|interprocess'; then
+            echo "::error::L2 违规：peon-burrow-ipc-types 引入了传输依赖"; fail=1
+          fi
+
+          # L1'：core 不许依赖产品层或其它上层 crate
+          if cargo tree -p peon-burrow-core | grep -Eq 'peon-burrow v|peon-burrow-ipc|peon-burrow-service|peon-burrow-update'; then
+            echo "::error::L1 违规：peon-burrow-core 依赖了上层 crate"; fail=1
+          fi
+
+          # L3：service / update 不许依赖引擎（它们要能单独复用）
+          if cargo tree -p peon-burrow-service | grep -Eq 'peon-burrow-core|peon-burrow v'; then
+            echo "::error::L3 违规：peon-burrow-service 依赖了引擎"; fail=1
+          fi
+          if cargo tree -p peon-burrow-update | grep -Eq 'peon-burrow-core|peon-burrow-ipc|peon-burrow-service|peon-burrow v'; then
+            echo "::error::L3 违规：peon-burrow-update 依赖了其它上层 crate"; fail=1
+          fi
+
+          # L5：bin 必须够薄
+          lines=$(wc -l < crates/peon-burrow/src/main.rs)
+          if [ "$lines" -gt 60 ]; then
+            echo "::error::L5 违规：main.rs 有 $lines 行（上限 60）"; fail=1
+          fi
+
+          # 约定 C5：`std::sync::Mutex` 只允许在**非 async、且不跨 await 持锁**的地方出现，
+          # 且每一处都必须带 `C5-EXCEPTION` 说明。数量对不上就说明有人新加了一处没留痕的锁。
+          usages=$(grep -rn 'std::sync::Mutex' crates --include='*.rs' | grep -vc 'C5-EXCEPTION' || true)
+          markers=$(grep -rn 'C5-EXCEPTION' crates --include='*.rs' | wc -l | tr -d ' ')
+          echo "std 锁用法 $usages 处 / 豁免标记 $markers 处"
+          if [ "$usages" -gt "$markers" ]; then
+            echo "::error::约定 C5：有 std::sync::Mutex 没有 C5-EXCEPTION 说明（async 代码里跨 await 持锁会让运行时线程卡住）"
+            grep -rn 'std::sync::Mutex' crates --include='*.rs' | grep -v 'C5-EXCEPTION'
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "全部守卫通过"
+
+  semver:
+    name: semver 检查（稳定层）
+    runs-on: ubuntu-latest
+    continue-on-error: true # 首次发版前没有基线，允许失败；有基线后应当收紧
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-semver-checks --locked
+      - name: 稳定层与上一版比对
+        run: |
+          for krate in peon-burrow-protocol peon-burrow-ipc-types; do
+            cargo semver-checks check-release -p "$krate" || true
+          done

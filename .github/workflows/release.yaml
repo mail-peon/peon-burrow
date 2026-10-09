@@ -1,0 +1,89 @@
+# 发到 crates.io。
+#
+# 顺序是**硬约束**（`ai-docs/decisions/adr-0009-crates-io-publishing.md`）：
+#   protocol → core → ipc-types → ipc → service → update → peon-burrow
+# 后一个依赖前一个，而 crates.io 在索引更新前会拒收 —— 所以每个包发完都要等它可见。
+# 想让它一条命令搞定可以换 harbor 编排，但**首次发版必须人工按序**（不可逆）。
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 只做 dry-run（不真的发）
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CRATES: peon-burrow-protocol peon-burrow-core peon-burrow-ipc-types peon-burrow-ipc peon-burrow-service peon-burrow-update peon-burrow
+
+jobs:
+  verify:
+    name: 版本一致性
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: tag 必须等于 workspace 版本
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          echo "tag=$tag workspace=$version"
+          [ "$tag" = "$version" ] || { echo "::error::tag 与 Cargo.toml 版本不一致"; exit 1; }
+      - name: 依赖顺序自检
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 每个包**只能**依赖它前面已经发过的包（或者不依赖本仓库的包）
+          for crate in $CRATES; do
+            echo "--- $crate"
+            cargo tree -p "$crate" --depth 1 | grep 'peon-burrow' || true
+          done
+
+  dry-run:
+    name: cargo publish --dry-run
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - shell: bash
+        run: |
+          set -euo pipefail
+          for crate in $CRATES; do
+            echo "=== dry-run $crate"
+            cargo publish -p "$crate" --dry-run --locked
+          done
+
+  publish:
+    name: 发布到 crates.io
+    needs: dry-run
+    if: github.event_name == 'push' || inputs.dry_run == false
+    runs-on: ubuntu-latest
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 按序发布
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          for crate in $CRATES; do
+            echo "=== publishing $crate"
+            # 索引有延迟：失败就等一会儿重试，而不是直接红
+            for attempt in 1 2 3 4 5; do
+              if cargo publish -p "$crate" --locked; then break; fi
+              echo "第 $attempt 次失败，等 30 秒后重试（多半是索引还没更新）"
+              sleep 30
+              [ "$attempt" -lt 5 ] || { echo "::error::$crate 发布失败"; exit 1; }
+            done
+          done

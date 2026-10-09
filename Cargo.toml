@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.0"
 edition = "2024"
 # MSRV：self_update 要求 1.88（见 ai-docs/02-tech-stack.md § 5）
 rust-version = "1.88"
@@ -70,13 +70,13 @@ tempfile = "3.27"
 rcgen = "0.14"
 
 # --- 内部 ---
-peon-burrow-protocol = { version = "0.1.0", path = "crates/peon-burrow-protocol" }
-peon-burrow-core = { version = "0.1.0", path = "crates/peon-burrow-core" }
-peon-burrow-ipc-types = { version = "0.1.0", path = "crates/peon-burrow-ipc-types" }
-peon-burrow-ipc = { version = "0.1.0", path = "crates/peon-burrow-ipc" }
-peon-burrow-service = { version = "0.1.0", path = "crates/peon-burrow-service" }
-peon-burrow-update = { version = "0.1.0", path = "crates/peon-burrow-update" }
-peon-burrow-testkit = { version = "0.1.0", path = "crates/peon-burrow-testkit" }
+peon-burrow-protocol = { version = "0.0.0", path = "crates/peon-burrow-protocol" }
+peon-burrow-core = { version = "0.0.0", path = "crates/peon-burrow-core" }
+peon-burrow-ipc-types = { version = "0.0.0", path = "crates/peon-burrow-ipc-types" }
+peon-burrow-ipc = { version = "0.0.0", path = "crates/peon-burrow-ipc" }
+peon-burrow-service = { version = "0.0.0", path = "crates/peon-burrow-service" }
+peon-burrow-update = { version = "0.0.0", path = "crates/peon-burrow-update" }
+peon-burrow-testkit = { path = "crates/peon-burrow-testkit" }  # publish = false：只留 path，发布时会被剥掉
 
 [workspace.lints.rust]
 missing_docs = "warn"

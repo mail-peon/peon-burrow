@@ -118,6 +118,31 @@ pub fn command_line_of(opts: &InstallOptions) -> String {
     windows_command_line(&opts.binary_path.display().to_string(), &opts.args)
 }
 
+/// 任务 XML 的 `<Command>`：**只有可执行文件**（带空格时加引号）。
+pub fn exec_command_of(opts: &InstallOptions) -> String {
+    let path = opts.binary_path.display().to_string();
+    if path.contains(' ') {
+        format!("\"{path}\"")
+    } else {
+        path
+    }
+}
+
+/// 任务 XML 的 `<Arguments>`：参数用空格连起来（Task Scheduler 自己按引号规则拆）。
+pub fn exec_arguments_of(opts: &InstallOptions) -> String {
+    opts.args
+        .iter()
+        .map(|arg| {
+            if arg.contains(' ') {
+                format!("\"{arg}\"")
+            } else {
+                arg.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// 当前用户的 `域\用户名`（任务 XML 的 `UserId` 要它）。
 ///
 /// 域里用 `USERDOMAIN`，本地账号没有域时退成机器名 ——
@@ -149,7 +174,11 @@ pub fn task_name(name: &str, level: ServiceLevel) -> String {
 /// - `<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count>` —— **失败重启策略**，
 ///   也就是 `verify_restart_policy` 要读回来的那一项。
 pub fn task_xml(opts: &InstallOptions) -> String {
-    let command = xml_escape(&command_line_of(opts));
+    // ⚠️ `<Command>` 只放**可执行文件**，参数必须放 `<Arguments>`：塞在一起的话
+    // 任务计划程序会拿整串当文件名去「打开」，于是弹出 Windows 的「你要如何打开这个文件?」，
+    // 而且任务永远起不来（真机踩过：界面显示「已安装」但 running 一直 false）。
+    let command = xml_escape(&exec_command_of(opts));
+    let arguments = xml_escape(&exec_arguments_of(opts));
     let user_id = xml_escape(&current_user_id());
     let enabled = opts.autostart != Autostart::Off;
     let interval = restart_interval_iso8601();
@@ -200,6 +229,7 @@ pub fn task_xml(opts: &InstallOptions) -> String {
   <Actions Context="Author">
     <Exec>
       <Command>{command}</Command>
+      <Arguments>{arguments}</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -1125,12 +1155,24 @@ mod tests {
 
         // 路径在 XML 正文里必须先做 XML 转义（`&` → `&amp;`）…
         assert!(xml.contains("peon &amp; burrow"), "XML 正文里的 & 必须转义");
-        // …而命令行的引号是给 CreateProcess 看的，用 `&quot;` 表示
+
+        // ⚠️ `<Command>` **只能**是可执行文件：参数塞进去的话，任务计划程序会拿整串当文件名
+        // 去「打开」，于是弹 Windows 的「你要如何打开这个文件?」，而且任务永远起不来
+        //（真机踩过：界面上显示「已安装」，running 却一直是 false）。
         assert!(
-            xml.contains("&quot;C:\\Program Files\\peon &amp; burrow\\burrow.exe&quot; run"),
-            "带空格的路径必须带引号：{xml}"
+            xml.contains(
+                "<Command>&quot;C:\\Program Files\\peon &amp; burrow\\burrow.exe&quot;</Command>"
+            ),
+            "Command 只能放 exe（带空格要引号）：{xml}"
         );
-        assert!(xml.contains("--port 41316"));
+        assert!(
+            xml.contains("<Arguments>run --port 41316</Arguments>"),
+            "参数必须独立放在 Arguments 里：{xml}"
+        );
+        assert!(
+            !xml.contains("burrow.exe&quot; run</Command>"),
+            "参数不能留在 Command 里：{xml}"
+        );
     }
 
     #[test]

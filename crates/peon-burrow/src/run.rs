@@ -471,12 +471,17 @@ async fn service_command(
 
         ServiceCommand::Install {
             system,
+            mode,
             no_autostart,
         } => {
+            // `--system` 与 `--mode system` 等价（前者是早期写法，桌面端用后者）
             let level = if system {
                 peon_burrow_ipc_types::ServiceLevel::System
             } else {
-                default_level
+                match mode.as_deref() {
+                    Some(value) => parse_service_level(value)?,
+                    None => default_level,
+                }
             };
             let autostart = if no_autostart {
                 peon_burrow_ipc_types::Autostart::Off
@@ -569,6 +574,48 @@ async fn service_command(
             say(json, "已重启", serde_json::json!({ "running": true }));
             Ok(ExitCode::Ok)
         }
+
+        ServiceCommand::Autostart { state } => {
+            let on = parse_on_off(&state)?;
+            let host = peon_burrow_service::native_for(default_level);
+            host.set_autostart(on).map_err(service_error)?;
+            let autostart = if on {
+                peon_burrow_ipc_types::Autostart::Logon
+            } else {
+                peon_burrow_ipc_types::Autostart::Off
+            };
+            if json {
+                print_json(&serde_json::json!({ "autostart": format!("{autostart:?}") }));
+            } else {
+                println!("开机自启：{}", if on { "已打开" } else { "已关闭" });
+            }
+            Ok(ExitCode::Ok)
+        }
+    }
+}
+
+/// 解析 `--mode` 的取值。
+///
+/// ⚠️ 不认识的值要**报错并列出可选值**，不能默默当成默认值 —— 用户以为装成系统服务、
+/// 实际装成用户级，直到「重启机器后服务没起来」才会发现。
+fn parse_service_level(value: &str) -> Result<peon_burrow_ipc_types::ServiceLevel, AppError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "user" => Ok(peon_burrow_ipc_types::ServiceLevel::User),
+        "system" => Ok(peon_burrow_ipc_types::ServiceLevel::System),
+        other => Err(AppError::Config(format!(
+            "--mode 取值不合法：{other}（可选：user | system）"
+        ))),
+    }
+}
+
+/// 解析 `on` / `off`（也接受 true/false、1/0）。
+fn parse_on_off(value: &str) -> Result<bool, AppError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "on" | "true" | "1" | "yes" => Ok(true),
+        "off" | "false" | "0" | "no" => Ok(false),
+        other => Err(AppError::Config(format!(
+            "取值不合法：{other}（可选：on | off）"
+        ))),
     }
 }
 
@@ -847,6 +894,23 @@ mod tests {
             .expect("doctor");
         assert_eq!(code, ExitCode::Config);
         drop(directory);
+    }
+
+    #[test]
+    fn service_level_and_on_off_are_parsed_strictly() {
+        use peon_burrow_ipc_types::ServiceLevel;
+
+        assert_eq!(parse_service_level("user").unwrap(), ServiceLevel::User);
+        assert_eq!(parse_service_level("SYSTEM").unwrap(), ServiceLevel::System);
+        // ⚠️ 不认识的值必须报错：默默当默认值会让「我明明装的是系统服务」变成
+        // 「重启机器后服务没起来」这种极难查的问题
+        assert!(parse_service_level("root").is_err());
+
+        assert!(parse_on_off("on").unwrap());
+        assert!(parse_on_off("true").unwrap());
+        assert!(!parse_on_off("off").unwrap());
+        assert!(!parse_on_off("0").unwrap());
+        assert!(parse_on_off("maybe").is_err());
     }
 
     #[tokio::test]

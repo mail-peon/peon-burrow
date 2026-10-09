@@ -152,13 +152,26 @@ pub enum Command {
 pub enum ServiceCommand {
     /// 安装自启项。
     Install {
-        /// 装成系统服务（需要一次提权）。
-        #[arg(long)]
+        /// 装成系统服务（需要一次提权）。等价于 `--mode system`。
+        #[arg(long, conflicts_with = "mode")]
         system: bool,
+
+        /// 安装级别：`user`（默认，零提权）或 `system`（一次提权）。
+        ///
+        /// 桌面端（peon-hall）按这个形式调用，与它的界面规格一致。
+        #[arg(long, value_name = "user|system")]
+        mode: Option<String>,
 
         /// 不自启，只注册。
         #[arg(long)]
         no_autostart: bool,
+    },
+
+    /// 打开/关闭开机自启（服务已安装时）。
+    Autostart {
+        /// `on` 或 `off`。
+        #[arg(value_name = "on|off")]
+        state: String,
     },
 
     /// 卸掉自启项。
@@ -233,9 +246,32 @@ mod tests {
             cli.command,
             Some(Command::Service(ServiceCommand::Install {
                 system: true,
-                no_autostart: false
+                no_autostart: false,
+                ..
             }))
         ));
+
+        // 桌面端（peon-hall）用的形式
+        let cli = Cli::parse_from(["burrow", "service", "install", "--mode", "system"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Service(ServiceCommand::Install {
+                mode: Some(_),
+                ..
+            }))
+        ));
+        // `--system` 与 `--mode` 互斥，别让用户以为两个都生效
+        assert!(
+            Cli::try_parse_from(["burrow", "service", "install", "--system", "--mode", "user"])
+                .is_err()
+        );
+
+        let cli = Cli::parse_from(["burrow", "service", "autostart", "off"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Service(ServiceCommand::Autostart { state })) if state == "off"
+        ));
+
         let cli = Cli::parse_from(["burrow", "trace", "--off"]);
         assert!(matches!(
             cli.command,

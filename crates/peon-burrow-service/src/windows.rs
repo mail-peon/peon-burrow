@@ -118,29 +118,37 @@ pub fn command_line_of(opts: &InstallOptions) -> String {
     windows_command_line(&opts.binary_path.display().to_string(), &opts.args)
 }
 
-/// 任务 XML 的 `<Command>`：**只有可执行文件**（带空格时加引号）。
-pub fn exec_command_of(opts: &InstallOptions) -> String {
-    let path = opts.binary_path.display().to_string();
-    if path.contains(' ') {
-        format!("\"{path}\"")
-    } else {
-        path
-    }
+/// 任务 XML 的 `<Command>`：**powershell**（它负责把中继的窗口藏起来）。
+///
+/// ⚠️ 为什么不直接指向 `burrow.exe`：Windows 会给控制台程序配一个控制台窗口，而任务计划
+/// 程序的 `<Hidden>` 只隐藏**任务本身**，不隐藏被启动进程的窗口 —— 用户会看到一个带日志的
+/// 终端（真机踩过）。`unsafe_code = "forbid"` 又堵住了 `ShowWindow` 那条路。
+pub fn exec_command_of(_opts: &InstallOptions) -> String {
+    powershell_path()
 }
 
-/// 任务 XML 的 `<Arguments>`：参数用空格连起来（Task Scheduler 自己按引号规则拆）。
+/// 任务 XML 的 `<Arguments>`：在**隐藏窗口**的 PowerShell 里调用中继。
+///
+/// 用 `&`（调用运算符）而不是 `Start-Process`：这样 PowerShell 会**等**子进程，
+/// 任务状态保持 Running（否则任务会立刻「完成」，界面上的运行状态就错了）。
+///
+/// ⚠️ `<Command>` 与 `<Arguments>` 必须分开：把参数塞进 `<Command>` 会让任务计划程序
+/// 拿整串当文件名去「打开」（弹「你要如何打开这个文件?」），而且任务永远起不来。
 pub fn exec_arguments_of(opts: &InstallOptions) -> String {
-    opts.args
-        .iter()
-        .map(|arg| {
-            if arg.contains(' ') {
-                format!("\"{arg}\"")
-            } else {
-                arg.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    // PowerShell 单引号字符串里 `'` 要翻倍
+    let exe = opts.binary_path.display().to_string().replace('\'', "''");
+    let mut call = format!("& '{exe}'");
+    for arg in &opts.args {
+        call.push(' ');
+        call.push_str(arg);
+    }
+    format!("-NoProfile -NonInteractive -WindowStyle Hidden -Command \"{call}\"")
+}
+
+/// PowerShell 的绝对路径（任务 XML 里给绝对路径最稳妥）。
+fn powershell_path() -> String {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+    format!(r"{root}\System32\WindowsPowerShell\v1.0\powershell.exe")
 }
 
 /// 当前用户的 `域\用户名`（任务 XML 的 `UserId` 要它）。
@@ -512,7 +520,36 @@ pub fn inspect_command(xml: &str) -> Option<String> {
     let actions = xml_section(xml, "Actions")?;
     let exec = xml_section(actions, "Exec")?;
     let command = xml_section(exec, "Command")?;
+
+    // 正常情况下 `<Command>` 就是可执行文件；但我们的任务是用 powershell 的隐藏窗口
+    // 拉起中继的，真正的中继路径在 `<Arguments>` 里（`& '<path>' run`）。
+    if let Some(arguments) = xml_section(exec, "Arguments") {
+        if let Some(path) = quoted_path(arguments) {
+            return Some(path);
+        }
+    }
     parse_windows_program(command)
+}
+
+/// 从 `-Command "& '<path>' run"` 里取出被单引号包住的路径。
+fn quoted_path(arguments: &str) -> Option<String> {
+    let start = arguments.find('\'')?;
+    let rest = &arguments[start + 1..];
+    let end = rest.find('\'')?;
+    let path = &rest[..end];
+    if path.is_empty() {
+        None
+    } else {
+        // XML 正文里 `&` 是 `&amp;`：读回来的必须是**真路径**（界面上要显示它）
+        Some(
+            path.replace("''", "'")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
+                .replace("&amp;", "&"),
+        )
+    }
 }
 
 /// 从一行 Windows 命令行里取出**第一个 token**（也就是可执行文件路径）。
@@ -1147,31 +1184,44 @@ mod tests {
     }
 
     #[test]
-    fn task_xml_quotes_paths_with_spaces_and_escapes_xml() {
+    fn task_xml_hides_the_window_and_keeps_arguments_separate() {
         let mut opts =
             InstallOptions::new("peon-burrow", r"C:\Program Files\peon & burrow\burrow.exe");
         opts.args = vec!["run".to_owned(), "--port".to_owned(), "41316".to_owned()];
         let xml = task_xml(&opts);
 
-        // 路径在 XML 正文里必须先做 XML 转义（`&` → `&amp;`）…
+        // 路径在 XML 正文里必须先做 XML 转义（`&` → `&amp;`）
         assert!(xml.contains("peon &amp; burrow"), "XML 正文里的 & 必须转义");
 
-        // ⚠️ `<Command>` **只能**是可执行文件：参数塞进去的话，任务计划程序会拿整串当文件名
-        // 去「打开」，于是弹 Windows 的「你要如何打开这个文件?」，而且任务永远起不来
-        //（真机踩过：界面上显示「已安装」，running 却一直是 false）。
+        // ① `<Command>` 是可执行文件，参数独立放在 `<Arguments>`：
+        //    塞在一起的话任务计划程序会拿整串当文件名去「打开」（弹「你要如何打开这个文件?」），
+        //    而且任务永远起不来（真机踩过：界面显示「已安装」但 running 一直是 false）。
         assert!(
-            xml.contains(
-                "<Command>&quot;C:\\Program Files\\peon &amp; burrow\\burrow.exe&quot;</Command>"
-            ),
-            "Command 只能放 exe（带空格要引号）：{xml}"
+            xml.contains("<Command>") && xml.contains("powershell.exe</Command>"),
+            "Command 要指向 powershell（负责隐藏窗口）：{xml}"
         );
         assert!(
-            xml.contains("<Arguments>run --port 41316</Arguments>"),
-            "参数必须独立放在 Arguments 里：{xml}"
-        );
-        assert!(
-            !xml.contains("burrow.exe&quot; run</Command>"),
+            !xml.contains("burrow.exe&quot; run</Command>")
+                && !xml.contains("burrow.exe run</Command>"),
             "参数不能留在 Command 里：{xml}"
+        );
+
+        // ② 真正的调用是隐藏窗口 + 等待子进程（任务状态才保持 Running）
+        assert!(xml.contains("-WindowStyle Hidden"), "必须隐藏窗口：{xml}");
+        assert!(
+            xml.contains("-Command &quot;&amp; &#39;") || xml.contains("-Command &quot;&amp; '"),
+            "用调用运算符（`&`）而不是 Start-Process，PowerShell 才会等子进程：{xml}"
+        );
+        assert!(
+            xml.contains("run --port 41316"),
+            "参数要在 Arguments 里：{xml}"
+        );
+
+        // ③ 自检要能把中继路径读回来（界面上显示的那个路径）
+        assert_eq!(
+            inspect_command(&xml).as_deref(),
+            Some(r"C:\Program Files\peon & burrow\burrow.exe"),
+            "要从 Arguments 里读回真正的中继路径"
         );
     }
 

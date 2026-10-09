@@ -152,17 +152,40 @@ fn check_port(context: &Context<'_>, _verbose: bool) -> CheckResult {
                 format!("{}:{}", context.config.relay.host, port),
             )
         }
-        Err(error) => CheckResult {
-            id: "port".to_owned(),
-            level: CheckLevel::Warn,
-            title: format!("端口 {port} 现在绑不上"),
-            // 绑不上时问清楚**是谁占着**：用户真正需要的是这个，而不是一个 errno
-            detail: describe_port_holder(port).unwrap_or_else(|| error.to_string()),
-            action: Some(
-                "如果中继已经在跑，这是正常的（用 `burrow status` 确认）；否则用 `burrow doctor -v` 看占用者，或把配置里的 port 改成别的"
-                    .to_owned(),
-            ),
-        },
+        Err(error) => {
+            let status = peon_burrow_service::probe_port(port).ok();
+            let owner_pid = status.as_ref().and_then(|status| status.owner_pid);
+
+            // ⚠️ **被运行中的中继自己占着不算问题**：中继在跑就一定会占着这个端口。
+            // 旧版一律报 WARN，用户看到「端口现在绑不上」会以为出了故障（真机问过：
+            // 「为什么会有额外的 burrow.exe？」—— 其实自始至终只有那一个中继）。
+            if owner_pid.is_some() && owner_pid == running_relay_pid(context.paths) {
+                let pid = owner_pid.unwrap_or_default();
+                let name = status
+                    .as_ref()
+                    .and_then(|status| status.owner_name.clone())
+                    .unwrap_or_else(|| "burrow".to_owned());
+                return ok(
+                    "port",
+                    &format!("端口 {port} 正被运行中的中继使用"),
+                    format!(
+                        "{name}（PID {pid}）—— 中继在跑时这是正常的；要腾出端口就先 `burrow stop`"
+                    ),
+                );
+            }
+
+            CheckResult {
+                id: "port".to_owned(),
+                level: CheckLevel::Warn,
+                title: format!("端口 {port} 现在绑不上"),
+                // 绑不上时问清楚**是谁占着**：用户真正需要的是这个，而不是一个 errno
+                detail: describe_port_holder(port).unwrap_or_else(|| error.to_string()),
+                action: Some(
+                    "占用者不是中继本身：用 `burrow doctor -v` 看它是谁，或把配置里的 port 改成别的"
+                        .to_owned(),
+                ),
+            }
+        }
     }
 }
 
@@ -264,6 +287,16 @@ fn ok(id: &str, title: &str, detail: String) -> CheckResult {
         detail,
         action: None,
     }
+}
+
+/// 运行中的中继自报的 PID（发现文件 `control.json` 里的 `pid`）。
+///
+/// 中继启动时会把自己的 pid 写进去，所以「占端口的是不是我们自己」是可以确证的，
+/// 不用猜。
+fn running_relay_pid(paths: &Paths) -> Option<u32> {
+    peon_burrow_ipc::read_endpoint(&paths.control_file())
+        .ok()?
+        .pid
 }
 
 /// 端口占用者诊断（`netstat`/`lsof` + 进程名）。
@@ -415,6 +448,46 @@ mod tests {
             action.contains("burrow status") || action.contains("port"),
             "{action}"
         );
+    }
+
+    #[test]
+    fn a_port_held_by_our_own_relay_is_ok() {
+        // 真机问过的问题：「端口绑不上、还有个 burrow.exe 占着，为什么？」
+        // —— 那就是中继自己（发现文件里的 pid 和占用端口的 pid 是同一个）。
+        // 中继在跑就一定会占着端口，这不是警告。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let fixture = Fixture::new(&format!("port = {port}\n"));
+
+        // 发现文件里写「我们自己」的 pid —— 测试进程此刻正是那个占用者
+        peon_burrow_ipc::write_endpoint(
+            &fixture.paths.control_file(),
+            &peon_burrow_ipc::ControlEndpoint::local_socket("peon-burrow", "test-token")
+                .with_pid(std::process::id()),
+        )
+        .expect("写发现文件");
+
+        let result = check_port(&fixture.context(), false);
+        assert_eq!(
+            result.level,
+            CheckLevel::Ok,
+            "{} / {}",
+            result.title,
+            result.detail
+        );
+        assert!(result.title.contains("运行中的中继"), "{}", result.title);
+        assert!(result.detail.contains("正常"), "{}", result.detail);
+    }
+
+    #[test]
+    fn a_port_held_by_someone_else_still_warns() {
+        // 反向：发现文件里的 pid 与占用者不一致（或者没有发现文件）→ 仍然警告
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let fixture = Fixture::new(&format!("port = {port}\n"));
+
+        let result = check_port(&fixture.context(), false);
+        assert_eq!(result.level, CheckLevel::Warn);
     }
 
     #[test]

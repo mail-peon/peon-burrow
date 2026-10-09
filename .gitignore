@@ -1,0 +1,24 @@
+# Rust
+target/
+**/target/
+*.rs.bk
+
+# 本地运行时状态（服务/CLI 调试产生的）
+*.log
+logs/
+.scratch/
+relay.toml.local
+relay.json
+control.json
+
+# 测试产物
+*.profraw
+criterion/
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json

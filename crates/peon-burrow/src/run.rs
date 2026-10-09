@@ -174,6 +174,8 @@ async fn run_relay(paths: &Paths, config: Config, no_control: bool) -> Result<Ex
     let mut endpoint = endpoint;
     if let Some((listener, address)) = listener {
         endpoint.address = address;
+        // 带上自己的 pid：桌面端与控制面据此判断发现文件是不是陈旧
+        endpoint = endpoint.with_pid(std::process::id());
         peon_burrow_ipc::write_endpoint(&paths.control_file(), &endpoint)?;
 
         let mut handler = RelayControl::new(

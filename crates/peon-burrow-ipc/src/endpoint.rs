@@ -28,6 +28,12 @@ pub struct ControlEndpoint {
     pub address: String,
     /// 鉴权 token。
     pub token: String,
+    /// 写这个文件的进程 pid（**可选**：老版本写的文件里没有它）。
+    ///
+    /// 桌面端靠它区分「服务没在跑」与「发现文件是旧的」：前者是状态，
+    /// 后者要在诊断里说明 —— 否则用户看到的是「明明没在跑却有个文件」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }
 
 impl ControlEndpoint {
@@ -37,6 +43,7 @@ impl ControlEndpoint {
             kind: TransportKind::LocalSocket,
             address: address.into(),
             token: token.into(),
+            pid: None,
         }
     }
 
@@ -46,7 +53,14 @@ impl ControlEndpoint {
             kind: TransportKind::LoopbackTcp,
             address: format!("127.0.0.1:{port}"),
             token: token.into(),
+            pid: None,
         }
+    }
+
+    /// 记下写这个文件的进程（调用的地方只有 `burrow run`）。
+    pub fn with_pid(mut self, pid: u32) -> Self {
+        self.pid = Some(pid);
+        self
     }
 }
 
@@ -93,10 +107,15 @@ mod tests {
     fn endpoint_json_shape_is_stable() {
         let endpoint = ControlEndpoint::loopback_tcp(41317, "s3cret");
         let encoded = serde_json::to_string(&endpoint).expect("encode");
+        // 没有 pid 时形状不变（老版本写的文件、老客户端都还能读）
         assert_eq!(
             encoded,
             r#"{"kind":"loopback-tcp","address":"127.0.0.1:41317","token":"s3cret"}"#
         );
+
+        // 记了 pid 就多一个字段（桌面端靠它判断发现文件是不是陈旧）
+        let encoded = serde_json::to_string(&endpoint.with_pid(4321)).expect("encode");
+        assert!(encoded.contains(r#""pid":4321"#), "{encoded}");
     }
 
     #[test]

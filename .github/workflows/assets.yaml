@@ -24,14 +24,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # ⚠️ macOS 的标签会随镜像下线而失效：请求一个已删除的标签**不会报错**，
+        #    只是永远停在 "Waiting for a runner to pick up this job..."（真机踩过：
+        #    `macos-13` 被 GitHub 删掉之后，x86_64-apple-darwin 那个 job 排了 20+ 分钟）。
+        #    可用标签以 https://github.com/actions/runner-images 的 Available Images 为准：
+        #    现在是 macos-15-intel（x64）/ macos-15（arm64），macos-14 已 deprecated。
+        #    改标签时和 peon-hall 的 release.yaml 保持一致。
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc

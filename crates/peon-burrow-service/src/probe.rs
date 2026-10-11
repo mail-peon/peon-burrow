@@ -60,13 +60,15 @@ impl PortStatus {
 
     /// 「三条出路」的文案（`port-and-discovery.md § 5.2`）。
     ///
-    /// 服务态**不能**交互提问，所以文案必须自带可复制命令。
+    /// 服务态**不能**交互提问，所以文案必须自带可复制命令 —— 命令里**要带上端口值**：
+    /// `--port` 是带值的选项，光写 `burrow doctor --port` 会得到
+    /// `error: a value is required for '--port <PORT>'`（文案曾经就是这么写的）。
     pub fn advice(port: u16) -> String {
         format!(
-            "1) 找出占用者： burrow doctor --port\n\
+            "1) 找出占用者： `burrow doctor --port {port}`\n\
              2) 换一个端口： 改配置 relay.toml 的 port，然后重启服务\n\
              \x20  （注意：扩展里也要填同样的地址 ws://127.0.0.1:{port}/）\n\
-             3) 前台临时跑： burrow run --port {}",
+             3) 前台临时跑： `burrow run --port {}`",
             port.wrapping_add(1)
         )
     }
@@ -476,7 +478,9 @@ Active Connections
     #[test]
     fn advice_is_copy_pasteable() {
         let advice = PortStatus::advice(41316);
-        assert!(advice.contains("burrow doctor --port"));
+        // 命令里必须带上端口值：`--port` 是带值的选项，光写 `--port` 会报
+        // 「a value is required for '--port <PORT>'」（文案曾经就是这么写的）
+        assert!(advice.contains("burrow doctor --port 41316"), "{advice}");
         assert!(advice.contains("relay.toml"));
         assert!(
             advice.contains("ws://127.0.0.1:41316/"),

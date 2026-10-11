@@ -271,7 +271,7 @@ mod tests {
         let error = opts.validate().expect_err("用户级 + Boot 必须被拒");
         assert!(matches!(error, ServiceError::InvalidOptions { .. }));
         assert!(
-            error.action().contains("--level system"),
+            error.action().contains("--mode system"),
             "{}",
             error.action()
         );

@@ -163,7 +163,43 @@ pub(crate) fn prepare_install(
             opts.level
         )));
     }
+    // Windows 系统级的命令行守卫，见函数说明。
+    if cfg!(windows) && level == ServiceLevel::System {
+        require_windows_service_flag(opts)?;
+    }
     Ok(())
+}
+
+/// Windows 系统级安装的命令行里**必须**有 `--service <注册的服务名>`。
+///
+/// 为什么值得一个硬校验：这条知识原本只活在产品层的 `service_args` 里，而它一旦丢了，
+/// 症状是 `sc start` 报 **1053**「服务没有及时响应启动或控制请求」——服务装得上、
+/// 永远起不来（真机踩过：`burrow` 里根本没有 SCM 的服务入口）。
+/// 谁换个调用方（测试、示例、别的安装器）就会原样踩回去，所以在**一条命令都还没发**之前
+/// 先在这里拦下来。名字也必须与注册名一致：`StartServiceCtrlDispatcher` 是按名字找服务的。
+///
+/// 只对 Windows 生效：别的平台没有 SCM 握手，缺 `--service` 只是少了「服务形态」那点便利
+/// （日志落盘、控制面走 loopback TCP），不值得因此拒绝一次本来能用的注册。
+fn require_windows_service_flag(opts: &InstallOptions) -> Result<(), ServiceError> {
+    let value = opts
+        .args
+        .iter()
+        .position(|arg| arg == "--service")
+        .and_then(|index| opts.args.get(index + 1));
+
+    match value {
+        Some(value) if value == &opts.name => Ok(()),
+        Some(value) => Err(ServiceError::invalid_options(format!(
+            "系统级安装的 `--service` 必须与注册的服务名一致：命令行里是 {value:?}，注册名是 {:?}。\
+             不一致时 SCM 的 dispatcher 报不上到，`sc start` 会报 1053",
+            opts.name
+        ))),
+        None => Err(ServiceError::invalid_options(format!(
+            "系统级安装的命令行里必须有 `--service {}`：Windows 上 SCM 拉起的进程靠它报到，\
+             缺了 `sc start` 会报 1053（服务装得上、永远起不来）",
+            opts.name
+        ))),
+    }
 }
 
 /// 服务托管的错误。
@@ -310,19 +346,31 @@ impl ServiceError {
     pub fn action(&self) -> String {
         match self {
             Self::UnsupportedPlatform { .. } => {
-                "改用前台运行：burrow run；需要常驻请用系统自带的任务计划 / systemd / launchd 手动登记"
+                "改用前台运行：`burrow run`；需要常驻请用系统自带的任务计划 / systemd / launchd 手动登记"
                     .to_owned()
             }
             Self::InvalidOptions { .. } => {
-                "用户级安装请用 --level user（登录时启动）；要「开机即起」请显式选择 --level system".to_owned()
+                "用户级安装用 `burrow service install --mode user`（登录时启动）；\
+                 要「开机即起」用 `burrow service install --mode system`（一次提权）"
+                    .to_owned()
             }
+            // ⚠️ 下面这些命令**必须真的能照抄**（`adr-0010` C2 的文案规范）。
+            // 曾经写成 `burrow service install --name <名字>` / `--level user` —— CLI 里
+            // 没有这两个参数（服务名来自配置的 `[service] name`，级别参数叫 `--mode`），
+            // 用户按提示照抄只会拿到第二个错误。产品层现在有一条测试把文案里的
+            // `burrow …` 命令喂给 clap 解析（`crates/peon-burrow/src/run.rs`）。
             Self::NotInstalled { name } => format!(
-                "先安装：burrow service install --name {name}；只想起一次请用 burrow run"
+                "先安装：`burrow service install`（服务名来自配置里的 `[service] name`，当前是 {name}）；\
+                 只想起一次用 `burrow run`"
             ),
             Self::AlreadyInstalled { name } => format!(
-                "先卸载再装：burrow service uninstall --name {name}，然后重新 install"
+                "先卸载再装：`burrow service uninstall`，然后重新 `burrow service install`\
+                 （服务名 {name} 来自配置，不是命令行参数）"
             ),
             Self::CommandFailed { purpose, .. } => {
+                // ⏳ 这里靠 `purpose` 的文字猜「是不是权限问题」：改一句 purpose 就会给出
+                // 错误的建议。彻底修法是把「要不要提权」变成结构化字段（跟着 CommandSpec 走），
+                // 现在先保留（见 `host.rs` 的错误枚举注释）。
                 if purpose.contains("提权") || purpose.contains("权限") {
                     "以管理员（Windows）/ root（macOS、Linux）身份重试这条命令".to_owned()
                 } else {
@@ -339,7 +387,7 @@ impl ServiceError {
                  （或者重启机器）再卸载"
             ),
             Self::RestartPolicyMissing { name, .. } => format!(
-                "重新安装一次即可重写策略：burrow service install --name {name}（会覆盖注册信息）"
+                "重新安装一次即可重写策略：`burrow service install`（会覆盖注册信息；服务名 {name} 来自配置）"
             ),
             Self::ProbeFailed { port, .. } => format!(
                 "手动查看占用者：Windows 用 netstat -ano -p TCP | findstr {port}；macOS / Linux 用 lsof -nP -iTCP:{port} -sTCP:LISTEN"

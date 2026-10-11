@@ -930,21 +930,34 @@ fn exe_file_name() -> &'static str {
 }
 
 /// 服务错误 → 应用错误（提权单独成一类，退出码不一样）。
+///
+/// ⚠️ 两个顺序 / 形状上的讲究：
+/// 1. **先分类再拼「下一步」**：分类靠 `Display` 的文字（下面第 2 点解释了它有多脆），
+///    而建议文案里也会出现「管理员」这类词（例如 `StopTimedOut` 提到「管理员终端」）——
+///    先拼进去就会把「运行期失败（1）」误判成「需要提权（4）」；
+/// 2. 用户看到的必须有**下一步**：错误枚举的 `action()` 就是为这个写的（文案规范
+///    「说人话、给下一步、可复制」），从前这里把它丢掉了，等于让用户对着一条
+///    `sc` 的原始报错自己想办法。
+///
+/// ⏳ 分类本身靠 `purpose` 里的字（「提权」/「管理员」）：改一句文案就会偏。
+/// 彻底修法是把「要不要提权」变成结构化字段（跟着 `CommandSpec` 走）。
 fn service_error(error: peon_burrow_service::ServiceError) -> AppError {
+    let display = error.to_string();
+    let needs_elevation = display.contains("提权") || display.contains("管理员");
+    let message = format!("{display}\n下一步：{}", error.action());
+
     if matches!(
         error,
         peon_burrow_service::ServiceError::UnsupportedPlatform { .. }
     ) {
         return AppError::Runtime(format!(
-            "{error}\n这个平台上请用前台 `burrow run`，或用系统自带的方式自启"
+            "{display}\n这个平台上请用前台 `burrow run`，或用系统自带的方式自启"
         ));
     }
-    let text = error.to_string();
-    // 服务库把「需要提权」写在用途说明里（它是唯一能带上下文的地方）
-    if text.contains("提权") || text.contains("管理员") {
-        AppError::NeedElevation(text)
+    if needs_elevation {
+        AppError::NeedElevation(message)
     } else {
-        AppError::Runtime(text)
+        AppError::Runtime(message)
     }
 }
 
@@ -1294,5 +1307,74 @@ mod tests {
             "{args:?}"
         );
         drop(directory);
+    }
+
+    /// 从一段文案里捞出反引号包起来的 `burrow …` 命令（这个仓库的文案就是这么写的）。
+    fn burrow_commands_in(text: &str) -> Vec<String> {
+        text.match_indices('`')
+            .filter_map(|(start, _)| {
+                let rest = text.get(start + 1..)?;
+                let end = rest.find('`')?;
+                let quoted = rest.get(..end)?;
+                quoted.starts_with("burrow ").then(|| quoted.to_owned())
+            })
+            .collect()
+    }
+
+    /// 错误文案里的 `burrow …` 命令**必须真的能被 CLI 解析**。
+    ///
+    /// 为什么值得一条测试：这些文案自称「可复制」（`host.rs` 的错误枚举就是这么写的），
+    /// 而真机上出现过 `burrow service install --name <名字>`、`--level user`、
+    /// `burrow doctor --port` 这类**不存在的参数**（CLI 里是 `--mode`、服务名来自配置、
+    /// `--port` 要带值）——用户照抄只会拿到第二个错误。
+    /// 这里把文案里的命令原样喂给 clap，写错就红。
+    #[test]
+    fn the_commands_in_the_error_advice_actually_parse() {
+        let advices = vec![
+            peon_burrow_service::ServiceError::UnsupportedPlatform { os: "plan9" }.action(),
+            peon_burrow_service::ServiceError::InvalidOptions {
+                message: "bad".to_owned(),
+            }
+            .action(),
+            peon_burrow_service::ServiceError::NotInstalled {
+                name: "peon-burrow".to_owned(),
+            }
+            .action(),
+            peon_burrow_service::ServiceError::AlreadyInstalled {
+                name: "peon-burrow".to_owned(),
+            }
+            .action(),
+            peon_burrow_service::ServiceError::RestartPolicyMissing {
+                name: "peon-burrow".to_owned(),
+                expected: "restart/5000".to_owned(),
+                found: String::new(),
+            }
+            .action(),
+            peon_burrow_service::ServiceError::StopTimedOut {
+                name: "peon-burrow".to_owned(),
+                seconds: 10,
+            }
+            .action(),
+            peon_burrow_service::PortStatus::advice(41316),
+        ];
+
+        let mut checked = 0usize;
+        for advice in advices {
+            for command in burrow_commands_in(&advice) {
+                // 文案里写的是 `burrow …` 整条命令；clap 要的 argv 第一项是程序名 ✓
+                let mut args: Vec<&str> = command.split_whitespace().collect();
+                if let Some(program) = args.first_mut() {
+                    *program = "burrow";
+                }
+                Cli::try_parse_from(args).unwrap_or_else(|error| {
+                    panic!("文案里的命令解析不了：{command}\n（来自：{advice}）\n{error}")
+                });
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 5,
+            "至少该从这些文案里捞出几条命令来核查，实际只有 {checked} 条"
+        );
     }
 }

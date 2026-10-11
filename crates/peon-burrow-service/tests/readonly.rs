@@ -81,7 +81,8 @@ fn probe_never_claims_a_port_is_free_when_it_is_not() {
 fn occupied_status_carries_the_advice_text() {
     // 服务态不能交互提问，所以文案必须自带三条出路（port-and-discovery.md § 5.2）
     let advice = PortStatus::advice(DEFAULT_PORT);
-    assert!(advice.contains("burrow doctor --port"));
+    // 命令要能原样照抄：`--port` 是带值的选项（写 `burrow doctor --port` 会报缺值）
+    assert!(advice.contains("burrow doctor --port 41316"), "{advice}");
     assert!(advice.contains("relay.toml"));
     assert!(advice.contains("ws://127.0.0.1:41316/"));
     assert!(advice.contains("burrow run --port 41317"));

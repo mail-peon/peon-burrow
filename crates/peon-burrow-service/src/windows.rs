@@ -145,14 +145,26 @@ pub fn exec_command_of(_opts: &InstallOptions) -> String {
 /// ⚠️ `<Command>` 与 `<Arguments>` 必须分开：把参数塞进 `<Command>` 会让任务计划程序
 /// 拿整串当文件名去「打开」（弹「你要如何打开这个文件?」），而且任务永远起不来。
 pub fn exec_arguments_of(opts: &InstallOptions) -> String {
-    // PowerShell 单引号字符串里 `'` 要翻倍
-    let exe = opts.binary_path.display().to_string().replace('\'', "''");
-    let mut call = format!("& '{exe}'");
+    // 路径与参数都走同一套 PowerShell 引用（`'` 翻倍）
+    let mut call = format!(
+        "& {}",
+        powershell_quote(&opts.binary_path.display().to_string())
+    );
     for arg in &opts.args {
         call.push(' ');
-        call.push_str(arg);
+        call.push_str(&powershell_quote(arg));
     }
     format!("-NoProfile -NonInteractive -WindowStyle Hidden -Command \"{call}\"")
+}
+
+/// PowerShell 单引号字符串（内部 `'` 翻倍）。
+///
+/// ⚠️ **参数也要引用**：今天用户级只传 `run`，但注册信息里的参数是**会变的**
+/// （系统级已经带 `--config` / `--data-dir` 这类可能含空格的值）。不引用的话
+/// PowerShell 会把带空格的值当成两个词，任务 XML 静默拼坏 —— 症状是「界面显示已安装、
+/// running 一直是 false」（同类问题真机踩过）。
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", escape_powershell_single_quotes(value))
 }
 
 /// PowerShell 的绝对路径（任务 XML 里给绝对路径最稳妥）。
@@ -1259,6 +1271,16 @@ mod tests {
         opts
     }
 
+    /// 系统级安装的选项：命令行**必须**带 `--service <名字>`
+    /// （`prepare_install` 会校验，见 `require_windows_service_flag`）。
+    fn system_opts() -> InstallOptions {
+        let mut opts = sample_opts();
+        opts.level = ServiceLevel::System;
+        opts.autostart = Autostart::Boot;
+        opts.args = vec!["run".to_owned(), "--service".to_owned(), opts.name.clone()];
+        opts
+    }
+
     /// `schtasks /Query /XML` 真正返回的那种形状（节选，够覆盖我们要读的字段）。
     fn task_xml_response() -> String {
         task_xml(&sample_opts())
@@ -1329,8 +1351,8 @@ mod tests {
             "用调用运算符（`&`）而不是 Start-Process，PowerShell 才会等子进程：{xml}"
         );
         assert!(
-            xml.contains("run --port 41316"),
-            "参数要在 Arguments 里：{xml}"
+            xml.contains("'run' '--port' '41316'"),
+            "参数要在 Arguments 里，而且各自加引号（带空格的值会被 PowerShell 拆成两个词）：{xml}"
         );
 
         // ③ 自检要能把中继路径读回来（界面上显示的那个路径）
@@ -1639,9 +1661,7 @@ mod tests {
             .expect(FAILURE_FIXTURE); // 自检：读注册表
 
         let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
-        let mut opts = sample_opts();
-        opts.level = ServiceLevel::System;
-        opts.autostart = Autostart::Boot;
+        let opts = system_opts();
         host.install(&opts).expect("install");
 
         let lines = runner.mutations().command_lines();
@@ -1723,9 +1743,7 @@ mod tests {
             .expect("") // sc failure
             .expect(FAILURE_FIXTURE); // 读注册表
         let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
-        let mut opts = sample_opts();
-        opts.level = ServiceLevel::System;
-        opts.autostart = Autostart::Boot;
+        let opts = system_opts();
         host.install(&opts).expect("install");
 
         let commands = commands_of(&runner);
@@ -1795,14 +1813,7 @@ mod tests {
             .expect("") // sc failure
             .expect(FAILURE_FIXTURE); // 自检
         let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
-        let mut opts = sample_opts();
-        opts.level = ServiceLevel::System;
-        opts.autostart = Autostart::Boot;
-        opts.args = vec![
-            "run".to_owned(),
-            "--service".to_owned(),
-            "peon-burrow".to_owned(),
-        ];
+        let opts = system_opts();
         host.install(&opts).expect("install");
 
         let commands = commands_of(&runner);
@@ -1921,8 +1932,7 @@ mod tests {
     fn system_install_rejects_logon_autostart() {
         let runner = FakeRunner::new();
         let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
-        let mut opts = sample_opts();
-        opts.level = ServiceLevel::System;
+        let mut opts = system_opts();
         opts.autostart = Autostart::Logon;
         let error = host
             .install(&opts)
@@ -1933,6 +1943,46 @@ mod tests {
             0,
             "校验失败时一条命令都不该发"
         );
+    }
+
+    #[test]
+    fn system_install_refuses_a_command_line_without_the_service_flag() {
+        // 这条守卫防的是真机踩过的那个 bug：注册信息里少了 `--service`，
+        // 服务装得上、`sc start` 报 1053（进程根本不向 SCM 报到）。
+        let runner = FakeRunner::new();
+        let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
+        let mut opts = system_opts();
+        opts.args = vec!["run".to_owned()];
+
+        let error = host.install(&opts).expect_err("缺 --service 必须被拦住");
+        assert!(
+            matches!(error, ServiceError::InvalidOptions { .. }),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("--service"), "{error}");
+        assert_eq!(
+            runner.mutations().run_count(),
+            0,
+            "守卫必须在发任何命令之前生效"
+        );
+    }
+
+    #[test]
+    fn system_install_refuses_a_service_flag_that_does_not_match_the_name() {
+        // 名字对不上同样是 1053：`StartServiceCtrlDispatcher` 按名字找服务。
+        let runner = FakeRunner::new();
+        let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
+        let mut opts = system_opts();
+        opts.args = vec![
+            "run".to_owned(),
+            "--service".to_owned(),
+            "other-name".to_owned(),
+        ];
+
+        let error = host.install(&opts).expect_err("名字不一致必须被拦住");
+        assert!(error.to_string().contains("other-name"), "{error}");
+        assert!(error.to_string().contains("peon-burrow"), "{error}");
+        assert_eq!(runner.mutations().run_count(), 0);
     }
 
     #[test]

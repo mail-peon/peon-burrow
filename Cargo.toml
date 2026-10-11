@@ -59,7 +59,10 @@ windows-service = "0.8.1"
 # `default-features = false`：默认的 `toml` feature 只为读 `winresource.toml` 配置，
 # 我们只用 `set_icon` + `compile`，关掉它少四个构建依赖（toml / serde_core / winnow …）。
 winresource = { version = "0.1", default-features = false }
-sysinfo = "0.39"
+# ⚠️ 钉在 0.38：`sysinfo` 0.39（含 0.39.0）要求 rustc **1.95**，而本 workspace 声明
+# `rust-version = "1.88"`（`ci.yaml` 的 msrv job 会用 1.88 真编一遍）。升它之前先确认
+# 新版本的 `rust-version`，否则那条 job 会以「not supported by the following package」红掉。
+sysinfo = "0.38"
 sha2 = "0.11"
 hex = "0.4"
 semver = "1.0"

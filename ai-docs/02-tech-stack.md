@@ -228,3 +228,4 @@ let status = self_update::backends::github::Update::configure()
 | 6 | `interprocess` 维护状态被动 | 传输已抽象；替换成本 = 两个平台分支 |
 | 7 | `rustls-platform-verifier` 版本未核 | 落地时核一遍；不可用则退 `webpki-roots` 并在 `doctor` 里说明「只认 Mozilla 根」 |
 | 8 | `tracing-appender` 的滚动是「按天 / 按大小」二选一 | 我们的策略是「按大小为主」（`log_max_mib` / `log_keep_files`），所以**没有用它**：在 `crates/peon-burrow/src/logging.rs` 自己写了一个薄封装（按大小滚动 + 保留 N 个，`tracing_subscriber` 的 `MakeWriter`）。⚠️ 不做跨天滚动，理由见 `design/logging-and-diagnostics.md § 5` |
+| 9 | **依赖的 `rust-version` 可能高于 workspace 的 MSRV** | 实例：`sysinfo` 0.39（含 0.39.0）要求 rustc **1.95**，而这里声明 1.88（`ci.yaml` 的 msrv job 会用 1.88 真编一遍）→ 那条 job 曾直接红在 `error: rustc 1.88.0 is not supported by the following package`。升依赖前先 `cargo info <crate>@<ver>` 看 `rust-version`（MSRV-aware resolver 只在**版本要求允许**时才挑低版本，`sysinfo = "0.39"` 这种写法它救不了）；现在钉在 `0.38.4` |

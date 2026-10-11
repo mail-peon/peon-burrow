@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use peon_burrow_protocol::RelayTarget;
-use rustls::pki_types::ServerName;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
 
 /// 重新导出：接入方注入信任根时不必自己依赖 `rustls`。
 pub use rustls::pki_types::CertificateDer;
@@ -25,12 +27,26 @@ use tokio_rustls::client::TlsStream;
 pub struct TlsConfig {
     /// 额外的信任根（DER 编码）。
     pub extra_roots: Vec<CertificateDer<'static>>,
+    /// **不校验证书链**（逃生口，仅测试环境）。
+    ///
+    /// ⚠️ 打开它之后中间人可以读到邮箱授权码。产品层只有
+    /// `tls_reject_unauthorized = false` 会打开它，而那条路径会持续警告
+    /// （启动日志 + `doctor`，见 `ai-docs/design/config-schema.md § 2`）。
+    /// 企业私有 CA 请用 [`TlsConfig::with_root`]。
+    pub accept_any_certificate: bool,
 }
 
 impl TlsConfig {
     /// 追加一个信任根。
     pub fn with_root(mut self, der: CertificateDer<'static>) -> Self {
         self.extra_roots.push(der);
+        self
+    }
+
+    /// 关掉证书链校验（**仅测试环境**，见字段说明）。
+    #[must_use]
+    pub fn with_any_certificate(mut self) -> Self {
+        self.accept_any_certificate = true;
         self
     }
 }
@@ -208,7 +224,22 @@ fn server_name_for(host: &str) -> Result<ServerName<'static>, TransportError> {
 }
 
 /// 构造 rustls 客户端配置：Mozilla 根证书 + 注入的额外根。
+///
+/// `accept_any_certificate` 时走 `dangerous()`：**只跳过证书链校验**，
+/// 签名验证仍然交给 provider（见 [`AcceptAnyCertificate`]）。
 fn client_config(tls: &TlsConfig) -> Result<rustls::ClientConfig, TransportError> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let builder = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
+        .with_safe_default_protocol_versions()
+        .map_err(|error| TransportError::TlsConfig(error.to_string()))?;
+
+    if tls.accept_any_certificate {
+        return Ok(builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAnyCertificate { provider }))
+            .with_no_client_auth());
+    }
+
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     for der in &tls.extra_roots {
@@ -216,14 +247,64 @@ fn client_config(tls: &TlsConfig) -> Result<rustls::ClientConfig, TransportError
             .add(der.clone())
             .map_err(|error| TransportError::TlsConfig(error.to_string()))?;
     }
+    Ok(builder.with_root_certificates(roots).with_no_client_auth())
+}
 
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(|error| TransportError::TlsConfig(error.to_string()))?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(config)
+/// 「不校验证书链」的逃生口（`TlsConfig::accept_any_certificate`）。
+///
+/// ⚠️ 它接受任何证书 —— 中间人可以读到邮箱授权码。只应在测试环境用；
+/// 企业私有 CA 走 `TlsConfig::with_root`。
+#[derive(Debug)]
+struct AcceptAnyCertificate {
+    /// 只跳过**证书链**校验：报文签名仍然交给 provider 验（不是把 TLS 降级成明文）。
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl ServerCertVerifier for AcceptAnyCertificate {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
 }
 
 #[cfg(test)]

@@ -1,31 +1,20 @@
 //! `run()`：把命令行变成行为。**退出码只在这里产生**（约定 C2）。
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use peon_burrow_core::{RelayServer, TlsConfig};
 use peon_burrow_ipc::{AuthPolicy, ControlClient, ControlEndpoint, Listener, serve};
 use peon_burrow_ipc_types::{CheckLevel, Request, ServiceStatus};
 use tracing::{info, warn};
-use tracing_subscriber::Layer as _;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::cli::{Cli, Command, ServiceCommand};
-use crate::config::{Config, EnvSource, LogLevel};
+use crate::config::{Config, EnvSource};
 use crate::control::{Lifecycle, RelayControl};
 use crate::doctor;
 use crate::exit::{AppError, ExitCode};
+use crate::logging::{LogFile, init_logging, verbose_flag};
 use crate::paths::Paths;
-
-/// 临时打开明文日志的全局开关（`burrow trace` 会翻它）。
-static VERBOSE: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
-
-/// 取（必要时创建）这个开关。
-pub fn verbose_flag() -> Arc<AtomicBool> {
-    Arc::clone(VERBOSE.get_or_init(|| Arc::new(AtomicBool::new(false))))
-}
 
 /// 同步入口：`main` 只调它（前台形态）。
 pub fn run(cli: Cli) -> ExitCode {
@@ -96,9 +85,15 @@ async fn dispatch_with_stop(
     stop: Option<crate::service::ServiceStop>,
 ) -> Result<ExitCode, AppError> {
     // 服务形态没有终端：日志**必须**落盘，否则出问题只能靠猜（`service-lifecycle.md § 3`）。
+    // 滚动策略来自配置（`log_max_mib` / `log_keep_files`，见 `logging.rs`）。
     let service_form = cli.service.is_some();
-    let log_file = service_form.then(|| paths.log_file());
-    init_logging(config.log_level, config.relay.trace, log_file.as_deref());
+    let log_path = service_form.then(|| paths.log_file());
+    let log_file = log_path.as_deref().map(|path| LogFile {
+        path,
+        max_mib: config.log_max_mib,
+        keep: config.log_keep_files,
+    });
+    init_logging(config.log_level, config.relay.trace, log_file);
     for warning in config.startup_warnings() {
         warn!("{warning}");
     }
@@ -136,59 +131,6 @@ async fn dispatch_with_stop(
         }
         Some(Command::Service(command)) => service_command(paths, &config, command, cli.json).await,
     }
-}
-
-/// 装日志。
-///
-/// trace 的开关是**运行期可翻**的（`burrow trace` 会翻它），所以过滤器读一个原子量，
-/// 而不是在启动时把级别写死。
-///
-/// `log_file` 给了就**同时**往文件写一份（服务形态：没有终端，stderr 等于扔掉）。
-pub fn init_logging(level: LogLevel, trace: bool, log_file: Option<&std::path::Path>) {
-    let verbose = verbose_flag();
-    verbose.store(trace, Ordering::Relaxed);
-
-    let max = match level {
-        LogLevel::Error => tracing::Level::ERROR,
-        LogLevel::Warn => tracing::Level::WARN,
-        LogLevel::Info => tracing::Level::INFO,
-        LogLevel::Debug => tracing::Level::DEBUG,
-        LogLevel::Trace => tracing::Level::TRACE,
-    };
-
-    let filter = tracing_subscriber::filter::filter_fn(move |metadata| {
-        *metadata.level() <= max || verbose.load(Ordering::Relaxed)
-    });
-
-    let stderr_layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stderr)
-        .with_filter(filter.clone());
-
-    // 服务形态：没有终端，唯一的证据就是这个文件（`logging-and-diagnostics.md § 1`）。
-    // ⏳ 按大小滚动（`log_max_mib` / `log_keep_files`）还没实现，暂时是不滚动的单文件。
-    let Some(path) = log_file else {
-        // 已经初始化过（测试里会多次调用）就忽略
-        let _ = tracing_subscriber::registry().with(stderr_layer).try_init();
-        return;
-    };
-
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_ansi(false)
-        .with_writer(tracing_appender::rolling::never(
-            path.parent().unwrap_or_else(|| std::path::Path::new(".")),
-            path.file_name()
-                .unwrap_or_else(|| std::ffi::OsStr::new("peon-burrow.log")),
-        ))
-        .with_filter(filter);
-
-    // 已经初始化过（测试里会多次调用）就忽略
-    let _ = tracing_subscriber::registry()
-        .with(stderr_layer)
-        .with(file_layer)
-        .try_init();
 }
 
 /// `burrow run`：前台跑中继 + 控制面，直到 Ctrl+C、控制面 `stop`、或服务管理器要求停下。
@@ -237,7 +179,7 @@ async fn run_relay(
             config.token.clone(),
             config.allowed_hosts().to_vec(),
         )),
-        TlsConfig::default(),
+        tls_config(&config),
     )
     .await?;
 
@@ -368,6 +310,21 @@ async fn run_relay(
         Lifecycle::Restart => ExitCode::RestartRequested,
         Lifecycle::Stop => ExitCode::Ok,
     })
+}
+
+/// 把配置里的 TLS 开关接到真正的 TLS 栈上。
+///
+/// ⚠️ 从前这里直接传 `TlsConfig::default()`：`tls_reject_unauthorized = false` 只被
+/// **解析 + 警告 + 在 `doctor` 里展示**，从不影响握手 —— 用户以为关掉了校验
+/// （`doctor` 还明确告诉他「证书校验已关闭」），实际连自签服务器照样失败，
+/// 于是他去查别的地方。现在这个开关真的生效，也真的危险（只应在测试环境用）。
+fn tls_config(config: &Config) -> TlsConfig {
+    let mut tls = TlsConfig::default();
+    if !config.tls_reject_unauthorized {
+        // 启动时的持续警告由 `Config::startup_warnings()` 负责（唯一一处文案）
+        tls = tls.with_any_certificate();
+    }
+    tls
 }
 
 /// 控制面地址：优先本地 socket，**服务形态**退到 loopback TCP。

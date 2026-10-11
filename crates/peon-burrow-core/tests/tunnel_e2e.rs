@@ -330,3 +330,33 @@ async fn a_self_signed_certificate_is_rejected_by_default() {
 
     relay.stop().await.expect("stop");
 }
+
+#[tokio::test]
+async fn the_test_only_escape_hatch_lets_a_self_signed_server_through() {
+    // `tls_reject_unauthorized = false` 落到 `TlsConfig::with_any_certificate()`。
+    // 从前这个开关只被解析与警告、从不影响 TLS 栈：用户以为关掉了校验，实际照样失败
+    // （而 `doctor` 还告诉他「证书校验已关闭」）—— 这条测试钉住「它真的生效」。
+    let certificates = peon_burrow_testkit::tls::certificates_for(&["localhost", "127.0.0.1"]);
+    let echo = peon_burrow_testkit::tls::spawn_tls_echo(&certificates).await;
+
+    let relay = RelayServer::start_with(
+        RelayOptions::on("127.0.0.1", 0),
+        Arc::new(PolicyRules::new(None, loopback())),
+        TlsConfig::default().with_any_certificate(),
+    )
+    .await
+    .expect("start relay");
+
+    let mut ws = connect(&relay, &format!("{echo}?tls=1")).await;
+    let command = b"A0001 CAPABILITY\r\n".to_vec();
+    ws.send(Message::Binary(command.clone().into()))
+        .await
+        .expect("send");
+    assert_eq!(
+        next_binary(&mut ws).await,
+        command,
+        "关掉证书链校验之后，自签服务器应当能握手并透传"
+    );
+
+    relay.stop().await.expect("stop");
+}

@@ -11,6 +11,7 @@ pub mod config;
 pub mod control;
 pub mod doctor;
 pub mod exit;
+pub mod logging;
 pub mod paths;
 pub mod run;
 pub mod service;

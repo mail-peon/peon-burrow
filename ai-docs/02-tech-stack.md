@@ -209,4 +209,4 @@ let status = self_update::backends::github::Update::configure()
 | 5 | 系统服务不继承用户的代理环境变量 | 代理配置从 `relay.toml` 读；文档里对「镜像站」给出完整 URL 写法 |
 | 6 | `interprocess` 维护状态被动 | 传输已抽象；替换成本 = 两个平台分支 |
 | 7 | `rustls-platform-verifier` 版本未核 | 落地时核一遍；不可用则退 `webpki-roots` 并在 `doctor` 里说明「只认 Mozilla 根」 |
-| 8 | `tracing-appender` 的滚动是「按天 / 按大小」二选一 | 我们的策略是「大小为主 + 跨天也滚」，落地时确认实现方式（可能是自己写一个 rolling 封装） |
+| 8 | `tracing-appender` 的滚动是「按天 / 按大小」二选一 | 我们的策略是「按大小为主」（`log_max_mib` / `log_keep_files`），所以**没有用它**：在 `crates/peon-burrow/src/logging.rs` 自己写了一个薄封装（按大小滚动 + 保留 N 个，`tracing_subscriber` 的 `MakeWriter`）。⚠️ 不做跨天滚动，理由见 `design/logging-and-diagnostics.md § 5` |

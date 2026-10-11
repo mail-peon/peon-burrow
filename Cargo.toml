@@ -46,7 +46,6 @@ tracing = "0.1"
 
 # --- 产品层 ---
 tracing-subscriber = { version = "0.3", features = ["fmt", "json", "env-filter"] }
-tracing-appender = "0.2"
 clap = { version = "4.6", features = ["derive"] }
 toml = "1.1"
 directories = "6.0"

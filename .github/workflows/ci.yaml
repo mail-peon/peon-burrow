@@ -41,12 +41,20 @@ jobs:
       - name: clippy (imap-watch disabled)
         run: cargo clippy -p peon-burrow-core --all-targets --no-default-features -- -D warnings
 
-      - name: clippy (other platforms' targets)
+      # ⚠️ 只查**纯 Rust 的稳定层**。`peon-burrow-{core,update}` 和 bin 会拉 `ring`，
+      # 而 ring 的 C 代码在 Linux 上没法为 `x86_64-pc-windows-msvc` 编译：cc-rs 对 msvc 目标
+      # 拒绝 GNU 编译器、去找 `lib.exe`（`CC_x86_64-pc-windows-msvc = None` → 失败）。
+      # 全 workspace 的那版命令在 ubuntu 上必然红（真机踩过），别改回去。
+      # 三个 OS 的**原生矩阵**已经覆盖各自的 cfg 路径（windows-latest 用真 MSVC、
+      # macos-latest 用真 clang），这一步只是额外保证稳定层能跨目标编译。
+      - name: clippy (stable layers on other targets)
         if: matrix.os == 'ubuntu-latest'
         run: |
           rustup target add x86_64-pc-windows-msvc x86_64-apple-darwin
-          cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
-          cargo clippy --workspace --all-targets --target x86_64-apple-darwin -- -D warnings
+          packages="-p peon-burrow-protocol -p peon-burrow-ipc-types -p peon-burrow-ipc -p peon-burrow-service"
+          for target in x86_64-pc-windows-msvc x86_64-apple-darwin; do
+            cargo clippy $packages --all-targets --target "$target" -- -D warnings
+          done
 
       - name: test
         run: cargo test --workspace --locked

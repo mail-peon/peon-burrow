@@ -15,26 +15,44 @@
 | async 运行时 | `tokio`（features: `rt-multi-thread` `net` `io-util` `time` `signal` `macros` `sync`） | 1.x 最新 | MIT | 事实标准；`windows-service` 需要独立线程跑 SCM dispatcher，与 tokio 混用最省事 |
 | WebSocket 服务端 | `tokio-tungstenite` | 0.2x 最新 | MIT/Apache-2.0 | 与 tokio 同族；`Message::Binary/Text/Close` 直接对应线上协议 |
 | TLS 客户端 | `tokio-rustls` + `rustls` | 0.2x / 0.23.x | MIT/Apache-2.0 | 993 是 implicit TLS；rustls 无 OpenSSL 依赖，交叉编译/静态链接友好 |
-| 根证书 | `rustls-platform-verifier`（首选）/ `webpki-roots`（兜底） | 版本待核 | MIT/Apache-2.0 | **用系统信任库**：企业自建根、用户手动导入的证书都能像系统一样生效；`webpki-roots` 只认 Mozilla 列表 |
+| 根证书 | `webpki-roots`（**当前用的**）；`rustls-platform-verifier` 待办 | 1.0 | MIT/Apache-2.0 | 系统信任库才能让企业自建根、用户手动导入的证书生效，但它当前会拉 `aws-lc-rs`（要 C 工具链）→ 先用 Mozilla 根，切换见 `adr-0010 § 5`。私有 CA 可以走 `TlsConfig::with_root` 注入 |
 | Windows 服务（跑 + 管 SCM） | `windows-service` | 0.8.1 | MIT OR Apache-2.0 | 唯一同时提供「服务入口 + SCM 管理（创建/删除/启停/失败动作）」的 crate。⚠️ 本仓库**只用它的服务入口**（`define_windows_service!` + `service_dispatcher` + `service_control_handler`，落点 `crates/peon-burrow/src/service.rs`）；创建 / 删除 / 启停 / 失败动作一律走 `sc.exe`（`peon-burrow-service`），于是注册那一半完全不依赖它 |
-| macOS / Linux 服务注册 | `service-manager` | 0.11.0 | MIT OR Apache-2.0 | 生成 launchd plist / systemd unit 并调 `launchctl` / `systemctl`；`ServiceLevel::User\|System` 两档 |
-| Windows 用户级自启 | **自己实现**（任务计划程序，走 `windows` crate 或 `schtasks /XML`） | —— | —— | 见 § 3.2：HKCU `Run` 会让控制台程序**闪一个黑框**，不能接受 |
+| macOS / Linux 服务注册 | **自己实现**（写 `launchd` plist / `systemd` unit 并调 `launchctl` / `systemctl`） | —— | —— | 见 § 1.1：`service-manager` 没采用 |
+| Windows 用户级自启 | **自己实现**（任务计划程序 XML + PowerShell `Register-ScheduledTask -Xml`） | —— | —— | 见 § 3.2：HKCU `Run` 会让控制台程序**闪一个黑框**，不能接受；`schtasks /XML` 要落临时文件，也不行 |
 | Windows exe 图标 | `winresource`（`default-features = false`） | 0.1 | MIT | **构建依赖**，把 `crates/peon-burrow/icons/icon.ico` 嵌进 `burrow.exe`（任务管理器 / `services.msc` 里的图标）。只在目标平台是 Windows 时拉进依赖图，且只在构建机也是 Windows 时才真的调 `rc.exe`（CI 会在 Linux 上 `--target *-pc-windows-msvc` 检查，见 `build.rs` 的注释）。关掉默认的 `toml` feature：我们只用 `set_icon` + `compile`，少四个构建依赖 |
 | 控制面（类型层） | `serde` + `serde_json` | 1.x | MIT/Apache-2.0 | **只依赖这两个** → `peon-burrow-ipc-types`；桌面端能单独拿类型 |
-| 控制面（传输层） | `interprocess` | 2.4.4 | 0BSD OR Apache-2.0 | 一套代码覆盖命名管道与 UDS；`auto` 模式下另留 loopback TCP 退路 → `peon-burrow-ipc` |
-| 自更新 | `self_update`（features: `checksums` `signatures` `signature` `async`）+ 自研清单解析 | 1.3.0 | MIT | 校验和 + zipsign 验签 + **替换正在运行的自己**（内部用 `self-replace` 1.5.0） |
-| 自我替换（备选/兜底） | `self-replace` | 1.5.0 | Apache-2.0 | 若 `self_update` 的 `ReleaseSource` 不够用（我们要自定义清单），直接用它 + `reqwest` |
-| HTTP 客户端 | `reqwest`（`rustls-tls`、`json`、可选 `socks`） | 0.13.x | MIT/Apache-2.0 | 自更新下载、`doctor` 的时间检查 |
+| 控制面（传输层） | **tokio 自带**（`tokio::net::windows::named_pipe` / `UnixListener`） | —— | —— | 少一个依赖，平台分支只有两个 `cfg`（见 § 1.1：`interprocess` 没采用） |
+| 自更新 | **自己实现**（`tokio-rustls` + `rustls(ring)` + `webpki-roots` 的最小 HTTPS GET） | —— | —— | 见 § 1.1：`self_update` / `reqwest` 都没采用（它们会把 `aws-lc-rs` 拖进来） |
 | 配置 | `serde` + `toml` | 1.x / 0.9.x | MIT/Apache-2.0 | TOML 好手写、带注释（对齐 `Cargo.toml` 的体验） |
 | 平台目录 | `directories` | 6.x | MIT/Apache-2.0 | ⚠️ **只允许出现在 `Paths::discover()` 里**；其余地方一律注入（L4），否则测试只能污染真实用户目录 |
 | CLI | `clap`（`derive`） | 4.5.x | MIT/Apache-2.0 | 子命令表见 [`design/config-schema.md § 4`](./design/config-schema.md) |
-| 日志 | `tracing` + `tracing-subscriber`（`fmt`、`json`、`env-filter`）+ `tracing-appender` | 0.1.x / 0.3.x / 0.2.x | MIT | 结构化事件名（[`logging-and-diagnostics.md § 2.4`](./design/logging-and-diagnostics.md)） |
+| 日志 | `tracing` + `tracing-subscriber`（`fmt`、`json`、`env-filter`）+ **自己写的按大小滚动** | 0.1.x / 0.3.x | MIT | 结构化事件名（[`logging-and-diagnostics.md § 2.4`](./design/logging-and-diagnostics.md)）；滚动见 § 1.1 与 `logging-and-diagnostics.md § 5` |
 | 进程 / 端口信息 | `sysinfo` | 0.3x | MIT | 「谁占着 41316」要给出 PID + 进程名 |
-| Windows 事件日志（可选） | `windows-eventlog` 或 `tracing-etw` | 待核 | MIT/Apache-2.0 | 只用于「服务启动/停止/崩溃」这类低频事件 |
-| 错误 | `thiserror`（库）/ `anyhow`（bin） | 2.x / 1.x | MIT/Apache-2.0 | 库要给人匹配的类型化错误（`FatalError` vs `TransientError`，见 parity E6） |
+| 错误 | `thiserror`（库与 bin 都用它） | 2.x | MIT/Apache-2.0 | 库要给人匹配的类型化错误（`FatalError` vs `TransientError`，见 parity E6）；见 § 1.1：没有 `anyhow` |
 | 字节缓冲 | `bytes` | 1.x | MIT | 与 tungstenite 同族；**公开 API 只用 `Bytes`，不出现 `Vec<u8>`**（省一次拷贝，且签名一旦公开就难改） |
-| 校验和 / 编码 | `sha2` + `hex`（`base64` 给 token） | 0.10.x / 0.4.x | MIT/Apache-2.0 | 自更新与 `SHA256SUMS` |
+| 校验和 / 编码 | `sha2` + `hex`（token/摘要都用 `hex`） | 0.10.x / 0.4.x | MIT/Apache-2.0 | 自更新与 `SHA256SUMS`；见 § 1.1：没有 `base64` |
 | 本地 tag / 版本 | `cargo-bumpp`（本地工具，不进依赖） | 0.4.1 | MIT | 与作者其它仓库一致：`cargo bumpp <level>` 改版本、提交、打 tag、推 tag |
+
+### 1.1 提名过、最终**没用**的（照表选型前先看这里）
+
+⚠️ 这张表是**选型时**的候选，有几条后来被否掉了。空挂在 `Cargo.toml` 上的依赖会让下一个人
+以为「加个 `{ workspace = true }` 就能用」——所以 manifest 里只留真的进了依赖图的，
+其余记在这里（理由以 [`adr-0010`](./decisions/adr-0010-implementation-revisions.md) 为准）。
+
+| crate | 现状 | 为什么 |
+| --- | --- | --- |
+| `interprocess` | ✗ 未采用 | tokio 自带命名管道 / Unix socket，藏在 `IoStream` trait 后面；少一个依赖（`adr-0010 § 3`） |
+| `self_update` + `self-replace` | ✗ 未采用 | 自更新的清单/验签是我们自己定的契约，直接自写 HTTPS GET + 替换更省事（`adr-0010 § 4`） |
+| `reqwest` | ✗ 未采用 | 0.13 的 `rustls` feature 会拉 `aws-lc-rs`（要 C 工具链），与「只用 ring」冲突（`adr-0010 § 4`） |
+| `rustls-platform-verifier` | ⏳ 待办 | 同上：等它支持 ring-only 就切过去（`adr-0010 § 5`）。现在用 `webpki-roots` |
+| `service-manager` | ✗ 未采用 | 只生成 plist / unit 并调 `launchctl` / `systemctl`，而「外部注册」这层本来就自己写（`peon-burrow-service`） |
+| `tracing-appender` | ✗ 未采用 | 它只能按**时间**滚，而配置承诺的是「单文件 `log_max_mib` + 保留 `log_keep_files` 个」→ 自己写了薄封装（`crates/peon-burrow/src/logging.rs`） |
+| `anyhow` | ✗ 未采用 | 库里要类型化错误（`thiserror`），bin 也只有一层 `AppError`，不需要它 |
+| `windows-eventlog` / `tracing-etw` | ⏳ 待办 | 「服务启动/停止/崩溃」写进事件日志还没做；现在只写 `<data-dir>/logs/` |
+| `windows` crate | ✗ 未采用 | 任务计划程序走 PowerShell `Register-ScheduledTask -Xml`，不引 `windows`（`unsafe_code = "forbid"` 也省得绕） |
+| `url` | ✗ 未采用 | 协议层自己解析目标（20 行 + 13 条单测），为 `&Uri` 引 `http`/`url` 不划算（`adr-0010 § 1`） |
+| `base64` | ✗ 未采用 | token 与摘要都用 `hex`，没必要多一种编码 |
+| `tokio-util` | ✗ 未采用 | 取消/关停是自己实现的 `CancelToken`（`state.rs`），不需要 `CancellationToken` |
 
 **桌面端（`peon-hall` 仓库）**：`tauri` 2.12.2、`tauri-plugin-shell` 2.4.1、
 `tauri-plugin-process` 2.4.0；**不使用** `tauri-plugin-updater`（桌面端不检查更新，见

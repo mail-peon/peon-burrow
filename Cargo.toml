@@ -35,13 +35,13 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "net", "io-util", "ti
 tokio-tungstenite = "0.30"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# ⏳ 还没用上：等它支持 ring-only（不拉 aws-lc-rs，那需要 C 工具链）就切过去，见 `adr-0010 § 5`
 rustls-platform-verifier = "0.7"
 webpki-roots = "1.0"
 # TODO(S3 后续)：切到 rustls-platform-verifier（系统信任库）。它当前会拉入 aws-lc-rs（需要 C 工具链），
 # 先用纯 Rust 的 webpki-roots（Mozilla 根）。见 ai-docs/02-tech-stack.md § 2 的说明。
 bytes = "1.12"
 futures-util = "0.3"
-tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 
 # --- 产品层 ---
@@ -49,9 +49,8 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "json", "env-filter"]
 clap = { version = "4.6", features = ["derive"] }
 toml = "1.1"
 directories = "6.0"
-url = "2.5"
 
-# --- 控制面 / 服务 / 更新（后续阶段用） ---
+# --- 控制面 / 服务 / 更新 ---
 # Windows 服务**入口**（SCM dispatcher + 控制码处理）。只在 `peon-burrow` 的 Windows 目标上用：
 # 它管的是「服务进程内部」；`peon-burrow-service` 管的是「外部注册」（走 `sc.exe`，不依赖它）。
 # 没有它的话 `sc create` 装出来的服务永远不报到 → `sc start` 报 1053（真机踩过）。
@@ -60,17 +59,16 @@ windows-service = "0.8.1"
 # `default-features = false`：默认的 `toml` feature 只为读 `winresource.toml` 配置，
 # 我们只用 `set_icon` + `compile`，关掉它少四个构建依赖（toml / serde_core / winnow …）。
 winresource = { version = "0.1", default-features = false }
-interprocess = "2.4"
 sysinfo = "0.39"
 sha2 = "0.11"
 hex = "0.4"
-base64 = "0.23"
 semver = "1.0"
-self_update = "1.3"
-# ⚠️ reqwest 0.13 去掉了 `rustls-tls`（现在叫 `rustls`，而且会拉 aws-lc-rs → 需要 C 工具链）。
-# 本项目政策是「只用 ring」：自更新走自己写的 HTTPS GET（tokio-rustls + rustls(ring) + webpki-roots），
-# 与 peon-burrow-core 的 transport 同一套。这个条目只留给将来参考。
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "json"] }
+
+# ⚠️ 这里只放**真的被某个 crate 引用**的依赖（`cargo tree` 里查得到）。
+# 提名过但最终没采用的那些（`interprocess` / `self_update` / `self-replace` / `reqwest` /
+# `anyhow` / `windows-eventlog` / `url` / `base64` / `tokio-util` / `service-manager`）
+# 写在 `ai-docs/02-tech-stack.md` § 1.1 里，附一句为什么 —— 空挂在 manifest 上会让人
+# 以为「照表加进来就能用」（真有人这么干过：`self_update` 从没进过依赖图）。
 
 # --- dev ---
 tempfile = "3.27"

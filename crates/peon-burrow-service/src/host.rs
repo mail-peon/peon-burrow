@@ -224,6 +224,18 @@ pub enum ServiceError {
         purpose: String,
     },
 
+    /// 发了停止请求，但服务在超时前一直没有报 `STOPPED`。
+    ///
+    /// 这是**卸载前**那道闸（`service-lifecycle.md § 4`）：`sc delete` 只做标记，
+    /// 带着一个还在跑的进程删掉，用户看到的就是「卸载了但扩展还能收信」。
+    #[error("服务「{name}」在 {seconds} 秒内没有停下来（停止请求已发出，但它没报 STOPPED）")]
+    StopTimedOut {
+        /// 服务名。
+        name: String,
+        /// 等了多久。
+        seconds: u64,
+    },
+
     /// 命令成功了，但输出不是 UTF-8。
     #[error("执行「{purpose}」的输出不是 UTF-8 文本，无法解析")]
     NonUtf8Output {
@@ -322,6 +334,10 @@ impl ServiceError {
                 "确认系统命令可执行（Windows：schtasks / sc；macOS：launchctl；Linux：systemctl），然后重试"
                     .to_owned()
             }
+            Self::StopTimedOut { name, .. } => format!(
+                "先看它卡在哪：`sc query {name}`；进程还挂着就用管理员终端 `taskkill /F /IM burrow.exe`\
+                 （或者重启机器）再卸载"
+            ),
             Self::RestartPolicyMissing { name, .. } => format!(
                 "重新安装一次即可重写策略：burrow service install --name {name}（会覆盖注册信息）"
             ),

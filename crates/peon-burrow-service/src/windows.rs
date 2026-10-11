@@ -34,6 +34,7 @@
 //! 平台动作对照表要求的「注册任务 + 失败重启策略」一个都不少。
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::host::{
     Autostart, InstallOptions, Plan, RESTART_INTERVAL_SECS, RESTART_RETRY_COUNT, RunMode,
@@ -49,6 +50,15 @@ pub const SYSTEM_RESTART_DELAY_MS: u64 = 5_000;
 
 /// 系统级服务的失败重启参数：失败计数重置周期 86400 秒。
 pub const SYSTEM_RESTART_RESET_SECS: u32 = 86_400;
+
+/// 停服务最多等多久（`sc stop` 只是**请求**，SCM 递完控制码就返回）。
+///
+/// 中继的关停是「先断开所有连接再 close」，实测亚秒级；10 秒足够覆盖慢机器，
+/// 超过就说明它真的卡住了（那时必须报错，不能带着活进程去 `sc delete`）。
+const STOP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 等停时的轮询间隔。
+const STOP_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// 任务 XML 里的失败重启间隔（ISO-8601 时长，`PT1M` = 1 分钟）。
 pub fn restart_interval_iso8601() -> String {
@@ -395,6 +405,10 @@ impl ServiceHost for WindowsUserHost {
         if !self.is_registered() {
             return Ok(());
         }
+        // ⚠️ 必须先停（`service-lifecycle.md § 4`）：任务删掉不等于进程结束 ——
+        // 正在跑的中继会继续活着（「卸载了但扩展还能收信」）。`stop()` 是幂等的，
+        // 没在跑时一条命令都不发。
+        self.stop()?;
         let spec = CommandSpec::new(
             "schtasks",
             ["/Delete", "/TN", &self.registered_name(), "/F"],
@@ -632,6 +646,8 @@ fn escape_powershell_single_quotes(value: &str) -> String {
 pub struct WindowsSystemHost {
     runner: Box<dyn Runner>,
     name: String,
+    /// 等「停下来」的上限（`sc stop` 只是请求）。
+    stop_timeout: Duration,
 }
 
 impl WindowsSystemHost {
@@ -650,7 +666,15 @@ impl WindowsSystemHost {
         Self {
             runner: Box::new(runner),
             name: name.into(),
+            stop_timeout: STOP_TIMEOUT,
         }
+    }
+
+    /// 改掉「等它停下来」的上限（**测试用**：超时那一条路不该真等 10 秒）。
+    #[must_use]
+    pub fn with_stop_timeout(mut self, timeout: Duration) -> Self {
+        self.stop_timeout = timeout;
+        self
     }
 
     /// 服务名。
@@ -670,6 +694,38 @@ impl WindowsSystemHost {
             Err(_) => false,
         }
     }
+
+    /// 服务现在是不是**停着**（`sc query` 报 `STOPPED`）。
+    ///
+    /// 查不出来（1060 = 没装、`sc` 起不来）也当「停着」：没有活着的服务要停。
+    fn is_stopped(&self) -> bool {
+        let spec = CommandSpec::new("sc", ["query", &self.name], "读取系统服务运行状态");
+        match crate::host::read_only(self.runner(), &spec) {
+            Ok(stdout) => service_is_stopped(&stdout),
+            Err(_) => true,
+        }
+    }
+
+    /// 等它真的报 `STOPPED`（最多 `stop_timeout`）。
+    ///
+    /// `sc stop` 只是**请求**：SCM 把控制码递出去就返回，进程可能还在退出。
+    /// 这一步是卸载前的最后一道闸 —— `sc delete` 只做标记，带着一个活进程删掉就是
+    /// 「卸载了但扩展还能收信」（`service-lifecycle.md § 4`）。
+    fn wait_until_stopped(&self) -> Result<(), ServiceError> {
+        let deadline = std::time::Instant::now() + self.stop_timeout;
+        loop {
+            if self.is_stopped() {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(ServiceError::StopTimedOut {
+                    name: self.name.clone(),
+                    seconds: self.stop_timeout.as_secs(),
+                });
+            }
+            std::thread::sleep(STOP_POLL_INTERVAL);
+        }
+    }
 }
 
 /// `sc query` 的输出里是否显示正在运行。
@@ -677,6 +733,15 @@ impl WindowsSystemHost {
 /// `sc` 的字段名与状态词**不做本地化**（`STATE : 4 RUNNING`），所以这里只认 ASCII。
 fn service_is_running(stdout: &str) -> bool {
     stdout.to_ascii_uppercase().contains("RUNNING")
+}
+
+/// `sc query` 的输出里是不是**已经停了**（`STATE : 1  STOPPED`）。
+///
+/// ⚠️ 判据是「出现 `STOPPED`」而**不是**「没有 `RUNNING`」：`START_PENDING` /
+/// `STOP_PENDING` / `PAUSED` 期间进程都还活着，把它们当成「停好了」会让卸载带着
+/// 一个活进程去 `sc delete`。
+fn service_is_stopped(stdout: &str) -> bool {
+    stdout.to_ascii_uppercase().contains("STOPPED")
 }
 
 /// 从 `sc query` 的输出里读 `WIN32_EXIT_CODE`（服务进程上次的退出码）。
@@ -838,6 +903,8 @@ impl ServiceHost for WindowsSystemHost {
     fn uninstall(&self) -> Result<(), ServiceError> {
         // ⚠️ 必须先停：`sc delete` 只做标记，正在跑的进程还会继续跑
         //（表现为「卸载了但扩展还能收信」）。
+        // `stop()` 自己会**核实**真的停了（不是只看 `sc stop` 的退出码），
+        // 停不下来会带着可照做的文案报错 —— 这样「带着活进程去 delete」就不可能发生。
         self.stop()?;
         let spec = CommandSpec::new("sc", ["delete", &self.name], "删除系统服务");
         match Plan::new().command(spec).execute(self.runner()) {
@@ -872,19 +939,34 @@ impl ServiceHost for WindowsSystemHost {
     }
 
     fn stop(&self) -> Result<(), ServiceError> {
+        // 幂等：**已经停着不是错误**。
+        //
+        // 真机踩过：中继自己从控制面停下来（如实报 `SERVICE_STOPPED`）之后再点「停止」或
+        // 「卸载」，`sc stop` 报 **1061**「服务无法在此时接受控制信息」——
+        // 服务处于 `STOPPED` 时 `dwControlsAccepted` 本来就是 0，SCM 对没有声明
+        // `SERVICE_ACCEPT_STOP` 的服务就是回 1061（老实现只容忍了 1062 / 1060）。
+        // 于是「**已经停好**」这个正确状态被当成失败，卸载直接死在这一步。
+        //
+        // 所以先问状态：停着就一条命令都不发（顺带省一次 `sc` 调用）。
+        if self.is_stopped() {
+            return Ok(());
+        }
+
         let spec = CommandSpec::new("sc", ["stop", &self.name], "停止系统服务");
         match Plan::new().command(spec).execute(self.runner()) {
-            Ok(()) => Ok(()),
+            Ok(()) => {}
             Err(error) => {
                 let text = error.to_string();
-                // 1062 = 服务未启动；1060 = 服务不存在。两者都已经是「停着」的状态。
-                if text.contains("1062") || text.contains("1060") {
-                    Ok(())
-                } else {
-                    Err(error)
+                // 1060 = 服务不存在；1061 = 无法在此时接受控制；1062 = 服务未启动。
+                // 这三条都**不能**直接当失败：它们可能是「其实已经停了 / 正在停」的竞态。
+                // 真的停没停由下面的核实说了算 —— 核实才是这道闸的判据，不是 `sc` 的退出码。
+                if !(text.contains("1060") || text.contains("1061") || text.contains("1062")) {
+                    return Err(error);
                 }
             }
         }
+
+        self.wait_until_stopped()
     }
 
     fn set_autostart(&self, on: bool) -> Result<(), ServiceError> {
@@ -1473,6 +1555,8 @@ mod tests {
         let runner = FakeRunner::new()
             // uninstall → is_registered → /Query /XML
             .expect(task_xml_response())
+            // uninstall → stop → is_running → /Query（没在跑）
+            .expect("状态: 就绪")
             // /Delete
             .expect("成功: 计划任务已删除")
             // set_autostart(false)
@@ -1486,10 +1570,28 @@ mod tests {
         host.set_autostart(true).expect("autostart on");
 
         let lines = runner.mutations().command_lines();
-        assert!(lines[1].contains("schtasks /Delete /TN"));
-        assert!(lines[1].contains("/F"), "卸载不该弹确认框：{}", lines[1]);
-        assert!(lines[2].contains("/Change") && lines[2].contains("/Disable"));
-        assert!(lines[3].contains("/Change") && lines[3].contains("/Enable"));
+        assert!(lines[2].contains("schtasks /Delete /TN"));
+        assert!(lines[2].contains("/F"), "卸载不该弹确认框：{}", lines[2]);
+        assert!(lines[3].contains("/Change") && lines[3].contains("/Disable"));
+        assert!(lines[4].contains("/Change") && lines[4].contains("/Enable"));
+    }
+
+    #[test]
+    fn user_uninstall_ends_a_running_task_before_deleting_it() {
+        // 任务删掉不等于进程结束：正在跑的中继会继续活着（「卸载了但扩展还能收信」）。
+        let runner = FakeRunner::new()
+            .expect(task_xml_response()) // is_registered
+            .expect("状态: 正在运行") // stop → is_running
+            .expect("成功: 计划任务已终止") // /End
+            .expect("成功: 计划任务已删除"); // /Delete
+
+        let host = WindowsUserHost::with_runner("peon-burrow", runner.clone());
+        host.uninstall().expect("uninstall");
+
+        let lines = runner.mutations().command_lines();
+        assert!(lines[2].contains("/End"), "先结束：{lines:?}");
+        assert!(lines[3].contains("/Delete"), "再删任务：{lines:?}");
+        assert_eq!(runner.expectations_left(), 0, "预置的输出必须被用完");
     }
 
     #[test]
@@ -1734,18 +1836,85 @@ mod tests {
     #[test]
     fn system_uninstall_stops_before_deleting() {
         // `sc delete` 只是打标记：不停就删，进程还会继续跑（「卸载了但扩展还能收信」）。
+        // 停完之后**还要核实**真的报了 STOPPED 才允许删 —— 所以中间多一次状态查询。
         let runner = FakeRunner::new()
-            .expect("STATE : 4 RUNNING") // stop 之前的状态查询
+            .expect("STATE : 4 RUNNING") // stop → is_stopped（还在跑）
             .expect("") // sc stop
+            .expect("STATE : 1 STOPPED") // 核实：真的停了
             .expect(""); // sc delete
 
         let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
         host.uninstall().expect("uninstall");
 
         let lines = runner.mutations().command_lines();
-        assert_eq!(lines.len(), 2, "只有「停 + 删」两条：{lines:?}");
-        assert!(lines[0].contains("sc stop"), "{lines:?}");
-        assert!(lines[1].contains("sc delete"), "{lines:?}");
+        assert_eq!(lines.len(), 4, "查 → 停 → 核实 → 删：{lines:?}");
+        assert!(lines[1].contains("sc stop"), "{lines:?}");
+        assert!(lines[3].contains("sc delete"), "{lines:?}");
+        assert_eq!(runner.expectations_left(), 0, "预置的输出必须被用完");
+    }
+
+    #[test]
+    fn stopping_a_stopped_system_service_is_a_noop() {
+        // 真机踩过：中继自己从控制面停下来之后再点「停止 / 卸载」，
+        // `sc stop` 报 **1061**「服务无法在此时接受控制信息」（服务停着时
+        // `dwControlsAccepted` 是 0），老实现只容忍 1062/1060 → 卸载被这一步挡死。
+        // 现在的判据是**状态**不是 `sc stop` 的退出码：已经停着就一条命令都不发。
+        let runner = FakeRunner::new().expect("STATE : 1 STOPPED"); // 只查一次状态
+
+        let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
+        host.stop().expect("已经停着 = 成功");
+
+        let lines = runner.mutations().command_lines();
+        assert_eq!(lines.len(), 1, "只查状态，不发 sc stop：{lines:?}");
+        assert_eq!(runner.expectations_left(), 0);
+    }
+
+    #[test]
+    fn a_rejected_sc_stop_still_counts_if_the_service_really_is_stopped() {
+        // 竞态：查完状态它刚好停了（或被别的路径停了）→ `sc stop` 回 1061/1062。
+        // 那不算失败，但也**不能**直接当成功 —— 由核实说了算。
+        let runner = FakeRunner::new()
+            .expect("STATE : 4 RUNNING") // is_stopped → 还在跑
+            .expect_failure("[SC] ControlService 失败 1061: 服务无法在此时接受控制信息。")
+            .expect("STATE : 1 STOPPED"); // 核实
+
+        let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone());
+        host.stop().expect("它确实停了，就该成功");
+
+        let lines = runner.mutations().command_lines();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[1].contains("sc stop"), "{lines:?}");
+    }
+
+    #[test]
+    fn stopping_fails_when_the_service_never_reports_stopped() {
+        // 卡住的服务（没注册控制码处理的老进程 / 卡在启动中）**必须**报错：
+        // 卸载要能带着它去 `sc delete` 就完了（「卸载了但扩展还能收信」）。
+        let runner = FakeRunner::new()
+            .expect("STATE : 4 RUNNING") // is_stopped → 还在跑
+            .expect("") // sc stop：请求发出去了
+            .expect("STATE : 4 RUNNING"); // 核实：它还是没停
+
+        let host = WindowsSystemHost::with_runner("peon-burrow", runner.clone())
+            // 超时设 0：测试不该真等 10 秒（第一轮核实就到截止时间）
+            .with_stop_timeout(Duration::ZERO);
+        let error = host.stop().expect_err("停不下来必须报错");
+
+        assert!(
+            matches!(error, ServiceError::StopTimedOut { .. }),
+            "{error:?}"
+        );
+        assert!(
+            error.action().contains("taskkill"),
+            "下一步要能照做：{}",
+            error.action()
+        );
+        let lines = runner.mutations().command_lines();
+        assert!(
+            lines.iter().any(|line| line.contains("sc stop")),
+            "状态是 RUNNING 就该发过 sc stop：{lines:?}"
+        );
+        assert_eq!(runner.expectations_left(), 0);
     }
 
     #[test]

@@ -60,6 +60,20 @@ pub enum Upstream {
     Tls(Box<TlsStream<TcpStream>>),
 }
 
+impl Upstream {
+    /// 对端地址（建连之后核对「解析出来的地址是不是本机」用）。
+    ///
+    /// 拿不到（罕见的 syscall 失败）就返回 `None`：调用方按「不核」处理 ——
+    /// 这条闸只用来堵 DNS 绕过的漏洞，不该因为读不到地址就把正常连接拒掉。
+    pub fn peer_addr(&self) -> Option<std::net::SocketAddr> {
+        match self {
+            Self::Plain(stream) => stream.peer_addr().ok(),
+            // `TlsStream::get_ref()` → `(&TcpStream, &ClientConnection)`
+            Self::Tls(stream) => stream.get_ref().0.peer_addr().ok(),
+        }
+    }
+}
+
 impl AsyncRead for Upstream {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,

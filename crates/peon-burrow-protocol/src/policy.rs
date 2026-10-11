@@ -69,14 +69,61 @@ pub fn is_host_allowed(host: &str, patterns: &[String]) -> bool {
     })
 }
 
-/// 目标是不是本机地址。
+/// 目标是不是本机地址（上游目标用）。
+///
+/// ⚠️ 判据是「**解析成 IP** 之后看它是不是回环」，不是字符串前缀匹配：
+/// 从前只认 `127.` 前缀 / `localhost` / `0.0.0.0` / `::1`，于是
+/// `::ffff:127.0.0.1`（IPv4 映射）与 `0:0:0:0:0:0:0:1`（展开写法）都能绕过去。
+///
+/// `0.0.0.0` / `::` 在这里也算：它们不是回环，但作为**上游目标**没有意义
+/// （连的是本机或直接被拒），历史行为同样是拒绝。
+///
+/// 域名指向本机（`localtest.me` → 127.0.0.1）字面量判断挡不住 ——
+/// 那一条由建连之后的 `Policy::check_peer` 兜（见 `peon-burrow-core`）。
 pub fn is_loopback(host: &str) -> bool {
-    let host = host.trim().to_ascii_lowercase();
-    host == "localhost"
-        || host.starts_with("127.")
-        || host == "0.0.0.0"
-        || host == "::1"
-        || host == "[::1]"
+    is_local_address(host)
+        || matches!(parse_host_ip(host), Some(address) if address.is_unspecified())
+}
+
+/// 是不是「只对本机可见」的地址：`localhost` / `127.0.0.0/8` / `::1`（含 IPv4 映射）。
+///
+/// 这是**监听地址**与**上游目标**共用的那一份判断（从前各写一份，`doctor` 那份最窄，
+/// 会把 `host = "[::1]"` 这种安全配置误报成 FAIL）：
+/// - 监听（产品层的 `config` / `doctor`）：只绑本机才允许不设 token；
+/// - 上游目标：指向本机的目标默认要拒（防把中继当 SSRF 跳板）。
+///
+/// ⚠️ `0.0.0.0` / `::` **不算**：作为监听地址它等于「所有网卡」（必须设 token）。
+pub fn is_local_address(host: &str) -> bool {
+    match parse_host_ip(host) {
+        Some(address) => is_local_ip(address),
+        None => normalize_host(host).eq_ignore_ascii_case("localhost"),
+    }
+}
+
+/// [`is_local_address`] 的 `IpAddr` 版本。
+///
+/// 建连**之后**的 peer 复核要用它：`std::net::IpAddr::is_loopback()` 只认 `::1`，
+/// `::ffff:127.0.0.1`（IPv4 映射）会漏掉 —— 而那是真实的攻击写法之一。
+pub fn is_local_ip(address: std::net::IpAddr) -> bool {
+    match address {
+        std::net::IpAddr::V4(v4) => v4.is_loopback(),
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
+    }
+}
+
+/// 去掉空白与 IPv6 字面量的方括号（`[::1]` 是 URL 里的写法），再试解析成 IP。
+fn parse_host_ip(host: &str) -> Option<std::net::IpAddr> {
+    normalize_host(host).parse().ok()
+}
+
+/// 去空白 + 去方括号。
+fn normalize_host(host: &str) -> &str {
+    host.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim()
 }
 
 /// 通配匹配：`*` 匹配任意序列（含空串），其余字节按字面量。
@@ -175,16 +222,46 @@ mod tests {
         for host in [
             "localhost",
             "LOCALHOST",
+            "  localhost  ",
             "127.0.0.1",
             "127.1.2.3",
             "0.0.0.0",
+            // `::` 是「未指定」：作为上游目标它连的是本机（历史行为也是拒绝）
+            "::",
             "::1",
             "[::1]",
+            // 从前这三种能绕过（只认字面量 `::1` / `127.` 前缀）：
+            "0:0:0:0:0:0:0:1",
+            "::ffff:127.0.0.1",
+            "[::ffff:127.0.0.1]",
         ] {
             assert!(is_loopback(host), "{host} should be loopback");
         }
-        for host in ["imap.qq.com", "10.0.0.1", "example.com", "1270.0.0.1"] {
+        for host in [
+            "imap.qq.com",
+            "10.0.0.1",
+            "example.com",
+            "1270.0.0.1",
+            // IPv4 映射的**公网**地址不算本机
+            "::ffff:8.8.8.8",
+        ] {
             assert!(!is_loopback(host), "{host} should not be loopback");
+        }
+    }
+
+    #[test]
+    fn local_addresses_exclude_the_unspecified_ones() {
+        // 监听地址用这份判断：`0.0.0.0` / `::` 是「所有网卡」，必须设 token，
+        // 所以它们**不算**「只对本机可见」；而它们作为上游目标依然要被拒（见上一条）。
+        for host in ["localhost", "127.0.0.1", "127.9.9.9", "::1", "[::1]"] {
+            assert!(is_local_address(host), "{host} should be a local address");
+        }
+        for host in ["0.0.0.0", "::", "10.0.0.1", "imap.qq.com", ""] {
+            assert!(!is_local_address(host), "{host} should not be local-only");
+        }
+        // 两种判断的关系：本机 ⇒ 回环
+        for host in ["localhost", "127.0.0.1", "::1"] {
+            assert!(is_loopback(host));
         }
     }
 

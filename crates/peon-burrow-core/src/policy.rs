@@ -13,6 +13,19 @@ use peon_burrow_protocol::{RejectReason, RelayTarget, is_host_allowed, is_loopba
 pub trait Policy: Send + Sync + std::fmt::Debug {
     /// 检查目标；`Err` 表示拒绝以及原因。
     fn check(&self, target: &RelayTarget) -> Result<(), RejectReason>;
+
+    /// **建连之后**再核一次：解析出来的对端地址如果指向本机，同样要拒。
+    ///
+    /// 为什么需要第二道闸：`check()` 只能看域名**字面量**，而 `localtest.me` 这类
+    /// 公网域名（A 记录 127.0.0.1）能让中继去连本机服务 —— 文档把「不给本机跳板」
+    /// 当安全属性（`ai-docs/04-parity-node-to-rust.md:110`），所以必须拿
+    /// `peer_addr()` 复核一次（在策略里解析 DNS 会有 TOCTOU，不做）。
+    ///
+    /// 默认实现放行：自定义策略不关心这件事就不必实现。
+    fn check_peer(&self, target: &RelayTarget, peer: std::net::IpAddr) -> Result<(), RejectReason> {
+        let _ = (target, peer);
+        Ok(())
+    }
 }
 
 /// 默认策略：`token` + `allowed_hosts` + loopback 保护。
@@ -66,6 +79,19 @@ impl Policy for PolicyRules {
             return Err(RejectReason::LoopbackNotAllowed);
         }
 
+        Ok(())
+    }
+
+    /// 见 [`Policy::check_peer`]：域名解析到本机也要拒（`localtest.me` → 127.0.0.1）。
+    ///
+    /// 白名单里的 host 仍然放行 —— 那是用户**显式**说的「我就要连本机」
+    /// （与 `check()` 里 `listed` 的例外保持一致）。
+    fn check_peer(&self, target: &RelayTarget, peer: std::net::IpAddr) -> Result<(), RejectReason> {
+        if peon_burrow_protocol::is_local_ip(peer)
+            && !is_host_allowed(&target.host, &self.allowed_hosts)
+        {
+            return Err(RejectReason::LoopbackNotAllowed);
+        }
         Ok(())
     }
 }
@@ -160,6 +186,47 @@ mod tests {
         assert_eq!(
             rules.check(&target("127.0.0.1", None)),
             Err(RejectReason::HostNotAllowed)
+        );
+    }
+
+    #[test]
+    fn a_peer_that_resolves_to_loopback_is_refused_too() {
+        // `check()` 只能看域名**字面量**：`localtest.me` 是公网域名、A 记录是 127.0.0.1，
+        // 所以必须靠建连之后的 `check_peer` 复核（文档把这条当安全属性）。
+        let open = rules(None, &[]);
+        let localtest = target("localtest.me", None);
+        for peer in ["127.0.0.1", "::1", "::ffff:127.0.0.1"] {
+            assert_eq!(
+                open.check_peer(&localtest, peer.parse().expect("ip")),
+                Err(RejectReason::LoopbackNotAllowed),
+                "{peer} 应当被拒"
+            );
+        }
+        // 公网对端照旧放行
+        assert_eq!(
+            open.check_peer(&localtest, "8.8.8.8".parse().expect("ip")),
+            Ok(())
+        );
+
+        // 显式写进白名单 = 用户说了「我就要连本机」，两道闸都放行
+        let listed = rules(None, &["localtest.me"]);
+        assert_eq!(listed.check(&localtest), Ok(()));
+        assert_eq!(
+            listed.check_peer(&localtest, "127.0.0.1".parse().expect("ip")),
+            Ok(())
+        );
+
+        // 默认实现（自定义策略不关心这件事）放行 —— 这条守的是「不破坏接入方」
+        #[derive(Debug)]
+        struct Anything;
+        impl Policy for Anything {
+            fn check(&self, _target: &RelayTarget) -> Result<(), RejectReason> {
+                Ok(())
+            }
+        }
+        assert_eq!(
+            Anything.check_peer(&localtest, "127.0.0.1".parse().expect("ip")),
+            Ok(())
         );
     }
 }

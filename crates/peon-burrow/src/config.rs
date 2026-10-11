@@ -599,15 +599,14 @@ fn non_empty(value: &str) -> Option<String> {
     }
 }
 
-/// 是不是本机地址。
+/// 是不是「只对本机可见」的监听地址。
+///
+/// ⚠️ 唯一实现放在 `peon_burrow_protocol::is_local_address`：从前 `config` 与 `doctor`
+/// 各写一份，`doctor` 那份只认 `127.0.0.1` / `::1` / `localhost`，于是
+/// `host = "[::1]"` 这种**安全**配置在诊断页被判 FAIL（退出码 2）。
+/// `0.0.0.0` / `::` 不算（那是「所有网卡」，必须设 token）。
 fn is_loopback_host(host: &str) -> bool {
-    let host = host.trim().trim_start_matches('[').trim_end_matches(']');
-    host.eq_ignore_ascii_case("localhost")
-        || host == "::1"
-        || host
-            .parse::<std::net::IpAddr>()
-            .map(|address| address.is_loopback())
-            .unwrap_or(false)
+    peon_burrow_protocol::is_local_address(host)
 }
 
 /// 读文件：先按 `toml::Table` 检查未知键，再反序列化。

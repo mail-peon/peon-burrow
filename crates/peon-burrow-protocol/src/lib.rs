@@ -14,6 +14,6 @@ pub mod watch;
 pub use close::{
     MAX_REASON_BYTES, POLICY_VIOLATION, RESTARTING, WATCH_FAILED, truncate_close_reason,
 };
-pub use policy::{RejectReason, is_host_allowed, is_loopback};
+pub use policy::{RejectReason, is_host_allowed, is_local_address, is_local_ip, is_loopback};
 pub use target::{RelayTarget, TargetResolve, resolve_target};
 pub use watch::{ClientMessage, WATCH_PROTOCOL_VERSION, WatchCredentials, WatchRequest};

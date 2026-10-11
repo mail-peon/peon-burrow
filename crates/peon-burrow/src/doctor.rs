@@ -192,7 +192,10 @@ fn check_port(context: &Context<'_>, _verbose: bool) -> CheckResult {
 /// token 强度。
 fn check_token(context: &Context<'_>, _verbose: bool) -> CheckResult {
     let host = &context.config.relay.host;
-    let loopback = host == "127.0.0.1" || host == "::1" || host.eq_ignore_ascii_case("localhost");
+    // ⚠️ 用共享的那一份判断（`config` 校验用的是同一个函数）：从前这里只认
+    // `127.0.0.1` / `::1` / `localhost`，于是 `host = "[::1]"` 这种安全配置
+    // 会被诊断页判 FAIL（退出码 2），而配置校验本身是通过的。
+    let loopback = peon_burrow_protocol::is_local_address(host);
 
     match context.config.token.as_deref() {
         None if loopback => ok(

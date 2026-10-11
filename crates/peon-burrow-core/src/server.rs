@@ -332,6 +332,17 @@ async fn handle_connection(
         None => None,
     };
 
+    // ②' 建连之后**再核一次**：域名可以解析到本机（`localtest.me` → 127.0.0.1），
+    //     字面量判断挡不住。文档把「不给本机跳板」当安全属性
+    //     （`04-parity-node-to-rust.md:110`），所以拿 `peer_addr()` 复核。
+    if let Some(target) = &target
+        && let Some(peer_addr) = upstream.as_ref().and_then(transport::Upstream::peer_addr)
+        && let Err(reason) = policy.check_peer(target, peer_addr.ip())
+    {
+        warn!(%peer, peer_addr = %peer_addr, reason = reason.message(), "policy reject");
+        return close_with(&mut ws, POLICY_VIOLATION, reason.message()).await;
+    }
+
     // ③ 第一帧分流
     let mut cancel = cancel;
     let first = tokio::select! {

@@ -743,10 +743,20 @@ gui/501/cn.example.relay = {
         // ⚠️ 长度**会**差 1：`<true/>` 是 7 个字符、`<false/>` 是 8 个 —— 旧断言写的是
         // 「true/false 同长，长度不该变」（错），而这条测试只在 macOS 上编译，
         // 于是它一直红着、没人看见。这里改成逐字节核对「只改了 RunAtLoad 的那一处值」。
+        //
+        // ⚠️ 值的**起点**要跳过换行与缩进（`locate_plist_scalar` 就是这么找的）：
+        // 上一版直接拿 `<key>RunAtLoad</key>` 的末尾去比，撞在 `\n    ` 上又误报了一次。
         let marker = "<key>RunAtLoad</key>";
-        let head = plist.find(marker).expect("样本里有 RunAtLoad") + marker.len();
-        let tail = off.find(marker).expect("输出里有 RunAtLoad") + marker.len();
-        assert!(plist[head..].starts_with("<true/>"), "样本默认是开着自启的");
+        let value_start = |text: &str| {
+            let after = text.find(marker).expect("有 RunAtLoad") + marker.len();
+            after + (text[after..].len() - text[after..].trim_start().len())
+        };
+        let (head, tail) = (value_start(&plist), value_start(&off));
+        assert!(
+            plist[head..].starts_with("<true/>"),
+            "样本默认是开着自启的，实际从 {:?} 开始",
+            plist[head..].chars().take(16).collect::<String>()
+        );
         assert_eq!(
             (&plist[..head], &plist[head + "<true/>".len()..]),
             (&off[..tail], &off[tail + "<false/>".len()..]),

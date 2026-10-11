@@ -41,6 +41,19 @@ enum Phase {
 /// 读缓冲。
 const READ_BUFFER: usize = 8 * 1024;
 
+/// 往插件推一条消息的上限。
+///
+/// mpsc 只有 32 个槽位：插件不读（或读得很慢）时 `send` 会一直挂着，而这条 await
+/// **没有取消源**（只有读那一段在 `select!` 里）—— 于是这条 watch 既不结束也不重连，
+/// 界面/`doctor` 上那根连接会一直挂着（`01-architecture.md` 的 I11：
+/// 「每个 `await` 必须有超时或取消源」）。超时只丢这一条通知，不丢邮件：
+/// 插件重连后会自己重新同步。
+const NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 往 IMAP 写一条命令的上限（服务器不读、TCP 零窗口时 `write_all` 会一直挂着，
+/// 同样没有取消源 —— 超时后当成可重试失败，交给退避重连）。
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// 跑到底：连上、挂 IDLE、推消息；断了按阶梯重连，致命错误则停下。
 pub(crate) async fn run_forever(
     credentials: WatchCredentials,
@@ -65,20 +78,24 @@ pub(crate) async fn run_forever(
                 // 重试无用：交给插件去提示用户改配置（快速重连只会让服务器锁账号）
                 warn!(account = %account_id, reason = %error.message(), "watch stopped");
                 metrics.record_error(error.message());
-                let _ = messages
-                    .send(ClientMessage::Failed {
+                notify(
+                    &messages,
+                    ClientMessage::Failed {
                         error: error.message(),
-                    })
-                    .await;
+                    },
+                )
+                .await;
                 break;
             }
             Err(error) => {
                 debug!(account = %account_id, reason = %error.message(), "watch attempt failed");
-                let _ = messages
-                    .send(ClientMessage::Error {
+                notify(
+                    &messages,
+                    ClientMessage::Error {
                         error: error.message(),
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
         }
 
@@ -93,11 +110,13 @@ pub(crate) async fn run_forever(
             .unwrap_or(Duration::from_secs(300));
         attempt = attempt.saturating_add(1);
 
-        let _ = messages
-            .send(ClientMessage::Reconnecting {
+        notify(
+            &messages,
+            ClientMessage::Reconnecting {
                 retry_in_ms: delay.as_millis() as u64,
-            })
-            .await;
+            },
+        )
+        .await;
 
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -153,12 +172,14 @@ async fn watch_once(
                 // 只在**变大**时推：变小说明有人在别处删邮件，不是新邮件
                 if notified >= 0 && exists > notified {
                     info!(host = %credentials.host, from = notified, to = exists, "new mail");
-                    let _ = messages
-                        .send(ClientMessage::Mail {
+                    notify(
+                        messages,
+                        ClientMessage::Mail {
                             account_id: credentials.account_id.clone(),
                             exists: exists as u32,
-                        })
-                        .await;
+                        },
+                    )
+                    .await;
                 }
                 notified = exists;
                 continue;
@@ -218,11 +239,13 @@ async fn watch_once(
                             notified = if exists >= 0 { exists } else { 0 };
                             phase = Phase::Idle;
                             info!(host = %credentials.host, exists = notified, "watching");
-                            let _ = messages
-                                .send(ClientMessage::Watching {
+                            notify(
+                                messages,
+                                ClientMessage::Watching {
                                     exists: notified as u32,
-                                })
-                                .await;
+                                },
+                            )
+                            .await;
                             tag += 1;
                             write_line(&mut socket, &format!("A{tag:04} IDLE")).await?;
                             reidle_at = Some(tokio::time::Instant::now() + options.watch_reidle);
@@ -320,15 +343,38 @@ fn quote(value: &str) -> Result<String, WatchError> {
     ))
 }
 
-/// 发一条命令（自带 CRLF）。
+/// 发一条命令（自带 CRLF），**带写超时**（见 [`WRITE_TIMEOUT`]）。
 async fn write_line<S>(socket: &mut S, line: &str) -> Result<(), WatchError>
 where
     S: tokio::io::AsyncWrite + Unpin,
 {
-    socket
-        .write_all(format!("{line}\r\n").as_bytes())
+    // 先把整行拼出来：`write_all` 借用它，而 `timeout` 会让这个 future 活到 await 之后
+    let payload = format!("{line}\r\n");
+    tokio::time::timeout(WRITE_TIMEOUT, socket.write_all(payload.as_bytes()))
         .await
+        .map_err(|_| {
+            WatchError::Transport(format!(
+                "写命令超时（{} 秒内没写出去，服务器可能不再读这条连接）",
+                WRITE_TIMEOUT.as_secs()
+            ))
+        })?
         .map_err(|error| WatchError::Transport(error.to_string()))
+}
+
+/// 往插件推一条消息，**带超时**（见 [`NOTIFY_TIMEOUT`]）。
+///
+/// 队列满 / 对端不读时只记一条 debug 并继续：watch 的职责是「有新邮件就通知」，
+/// 通知丢了不该让整条 watch 连接挂掉。
+async fn notify(messages: &mpsc::Sender<ClientMessage>, message: ClientMessage) {
+    if tokio::time::timeout(NOTIFY_TIMEOUT, messages.send(message))
+        .await
+        .is_err()
+    {
+        debug!(
+            timeout_secs = NOTIFY_TIMEOUT.as_secs(),
+            "插件读得太慢：这条通知没送出去（watch 继续，重连后会重新同步）"
+        );
+    }
 }
 
 #[cfg(test)]

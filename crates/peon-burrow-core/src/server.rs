@@ -27,6 +27,12 @@ use crate::state::{Cancel, CancelToken, Metrics, RelayState, SharedMetrics};
 use crate::transport::{self, TlsConfig};
 use crate::tunnel;
 
+/// WebSocket 升级握手的上限。
+///
+/// 为什么需要：`accept_hdr_async` 会一直等对端把升级请求发完，而只发 TCP、
+/// 不发（或发半个）请求是最省事的占坑方式。10 秒对正常客户端（浏览器扩展）绰绰有余。
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// 中继服务句柄。
 ///
 /// 生命周期是显式的（工厂 + `start` / `stop`），不在模块加载时监听 ——
@@ -255,25 +261,41 @@ async fn handle_connection(
     metrics: SharedMetrics,
     cancel: CancelToken,
 ) -> Result<(), ConnectionError> {
+    // ⚠️ **先计数、先判上限，再握手**。
+    //
+    // 从前这两步在手握完**之后**：只发 TCP、不发（或发半个）HTTP 升级请求，
+    // 就能让中继一直堆任务与 fd —— 这些连接既不受 `max_connections` 约束
+    // （上限是唯一挡它的东西，见 `04-parity-node-to-rust.md:254`），
+    // 也不会被 `cancel` 结束。代价是超限时**发不了 close 帧**（还没升级成 WS），
+    // 对端只会看到连接被断开 —— 换来的是上限真的生效。
+    let _guard = ConnectionGuard::new(SharedMetrics::clone(&metrics));
+    if metrics.active() > options.max_connections {
+        warn!(%peer, limit = options.max_connections, "too many connections");
+        return Ok(());
+    }
+
     // 升级请求里的目标只有握手回调能看到，用一个 OnceLock 把它带出来
     let uri_slot: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
     let slot = Arc::clone(&uri_slot);
-    let mut ws = tokio_tungstenite::accept_hdr_async(
-        stream,
-        move |request: &Request, response: Response| {
-            let _ = slot.set(request.uri().to_string());
-            Ok(response)
-        },
+    // 握手也要有上限：`accept_hdr_async` 会一直等对端把升级请求发完
+    let mut ws = tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        tokio_tungstenite::accept_hdr_async(
+            stream,
+            move |request: &Request, response: Response| {
+                let _ = slot.set(request.uri().to_string());
+                Ok(response)
+            },
+        ),
     )
     .await
+    .map_err(|_| {
+        ConnectionError::Handshake(format!(
+            "握手超时（{} 秒内没有完成 WebSocket 升级）",
+            HANDSHAKE_TIMEOUT.as_secs()
+        ))
+    })?
     .map_err(|error| ConnectionError::Handshake(error.to_string()))?;
-
-    let _guard = ConnectionGuard::new(SharedMetrics::clone(&metrics));
-
-    if metrics.active() > options.max_connections {
-        warn!(%peer, limit = options.max_connections, "too many connections");
-        return close_with(&mut ws, POLICY_VIOLATION, "too many connections").await;
-    }
 
     // ① 策略检查**同步**完成：被拒的连接一个字节都不发
     let raw_target = uri_slot.get().cloned().unwrap_or_default();

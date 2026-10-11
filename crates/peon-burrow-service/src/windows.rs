@@ -523,10 +523,8 @@ pub fn inspect_command(xml: &str) -> Option<String> {
 
     // 正常情况下 `<Command>` 就是可执行文件；但我们的任务是用 powershell 的隐藏窗口
     // 拉起中继的，真正的中继路径在 `<Arguments>` 里（`& '<path>' run`）。
-    if let Some(arguments) = xml_section(exec, "Arguments") {
-        if let Some(path) = quoted_path(arguments) {
-            return Some(path);
-        }
+    if let Some(path) = xml_section(exec, "Arguments").and_then(quoted_path) {
+        return Some(path);
     }
     parse_windows_program(command)
 }
@@ -681,6 +679,21 @@ fn service_is_running(stdout: &str) -> bool {
     stdout.to_ascii_uppercase().contains("RUNNING")
 }
 
+/// 从 `sc query` 的输出里读 `WIN32_EXIT_CODE`（服务进程上次的退出码）。
+///
+/// 真机形状：`WIN32_EXIT_CODE    : 0  (0x0)`（字段名不本地化，冒号后有十进制 + 十六进制）。
+/// 读不出来返回 `None`：**不要**谎报 0 —— 界面会把它当成「上次是干净退出的」。
+fn inspect_sc_exit_code(stdout: &str) -> Option<i32> {
+    for line in stdout.lines() {
+        if !line.to_ascii_uppercase().contains("WIN32_EXIT_CODE") {
+            continue;
+        }
+        let (_, value) = line.split_once(':')?;
+        return value.split_whitespace().next()?.parse::<i32>().ok();
+    }
+    None
+}
+
 impl Default for WindowsSystemHost {
     /// 等价于 [`WindowsSystemHost::new`]：默认服务名 + 真执行器。
     fn default() -> Self {
@@ -709,9 +722,10 @@ impl ServiceHost for WindowsSystemHost {
         let failure = failure_actions_query(&self.name);
         let failure_stdout = crate::host::read_only(self.runner(), &failure).unwrap_or_default();
 
+        let running = service_is_running(&stdout);
         Ok(ServiceStatus {
             installed: true,
-            running: service_is_running(&stdout),
+            running,
             level: Some(ServiceLevel::System),
             autostart: Some(inspect_sc_autostart(&config)),
             name: self.name.clone(),
@@ -719,7 +733,9 @@ impl ServiceHost for WindowsSystemHost {
             // 系统服务：装 / 卸 / 启 / 停都要管理员；读状态不要。
             requires_elevation: true,
             restart_policy_configured: verify_failure_actions(&failure_stdout, &self.name).is_ok(),
-            last_exit_code: None,
+            // 只在**没在跑**时才有意义（在跑时那个码是上一次的残留）。
+            // 「装上了但一起来就退」正是最需要看见它的时候。
+            last_exit_code: (!running).then(|| inspect_sc_exit_code(&stdout)).flatten(),
         })
     }
 
@@ -749,7 +765,7 @@ impl ServiceHost for WindowsSystemHost {
                 // 真机踩过）。按渲染后的命令行写断言是看不出来的：`display_line()` 把两种拼法
                 // 拼成同一行，所以 `assert!(line.contains("start= auto"))` 对两种写法都成立。
                 "binPath=".to_owned(),
-                bin_path,
+                bin_path.clone(),
                 "start=".to_owned(),
                 start_type.to_owned(),
                 "DisplayName=".to_owned(),
@@ -778,10 +794,28 @@ impl ServiceHost for WindowsSystemHost {
         if !exists {
             plan = plan.command(create);
         } else {
+            // ⚠️ 已存在时**必须**把命令行刷新成这次要注册的那份：注册信息里的 `binPath`
+            // 是我们写的，而它随版本变（例如系统服务从 `"…\burrow.exe" run` 变成
+            // `"…\burrow.exe" run --service <名字> --config … --data-dir …`）。
+            // 不刷新的话 `service install` 会「成功」，而服务跑的仍是老命令行 —— 老命令行
+            // 里没有 `--service`，于是每次启动都不报到、`sc start` 报 1053（真机踩过）。
+            plan = plan.command(CommandSpec::new(
+                "sc",
+                [
+                    "config".to_owned(),
+                    opts.name.clone(),
+                    // 同 `create`：选项名与值必须分开传（否则 1639「无效 start= 参数」）
+                    "binPath=".to_owned(),
+                    bin_path.clone(),
+                    "start=".to_owned(),
+                    start_type.to_owned(),
+                ],
+                "刷新系统服务的启动命令行",
+            ));
             tracing::info!(
                 event = "service.install",
                 mode = "system",
-                "服务已存在，跳过创建"
+                "服务已存在，跳过创建（命令行会被刷新）"
             );
         }
 
@@ -1645,11 +1679,16 @@ mod tests {
     }
 
     #[test]
-    fn installing_an_existing_system_service_skips_create() {
+    fn installing_an_existing_system_service_skips_create_but_refreshes_the_command_line() {
         // `sc create` 对已存在的服务报 1073 —— 上一次失败留下的半成品会挡住每一次重装
         //（真机踩过：用户只能自己去 `sc delete`）。存在就跳过创建，只把其余配置补齐。
+        //
+        // ⚠️ 但**命令行必须刷新**：它随版本变（系统服务从 `… run` 变成
+        // `… run --service <名字> --config … --data-dir …`）。不刷新的话重装「成功」了，
+        // 服务跑的仍是老命令行 —— 每次启动都是 1053（真机踩过）。
         let runner = FakeRunner::new()
             .expect("SERVICE_NAME: peon-burrow\n        STATE              : 4  RUNNING")
+            .expect("") // sc config（刷新 binPath + start）
             .expect("") // sc description
             .expect("") // sc failure
             .expect(FAILURE_FIXTURE); // 自检
@@ -1657,8 +1696,14 @@ mod tests {
         let mut opts = sample_opts();
         opts.level = ServiceLevel::System;
         opts.autostart = Autostart::Boot;
+        opts.args = vec![
+            "run".to_owned(),
+            "--service".to_owned(),
+            "peon-burrow".to_owned(),
+        ];
         host.install(&opts).expect("install");
 
+        let commands = commands_of(&runner);
         let lines = runner.mutations().command_lines();
         assert!(
             !lines.iter().any(|line| line.contains("sc create")),
@@ -1668,6 +1713,22 @@ mod tests {
             lines.iter().any(|line| line.contains("sc failure")),
             "失败策略仍要写：{lines:?}"
         );
+
+        let config = commands
+            .iter()
+            .find(|command| command.args.first().is_some_and(|arg| arg == "config"))
+            .expect("已存在的服务要刷新命令行");
+        let bin_path = config
+            .args
+            .iter()
+            .position(|arg| arg == "binPath=")
+            .and_then(|index| config.args.get(index + 1))
+            .expect("config 里要有 binPath=");
+        assert!(
+            bin_path.contains("--service"),
+            "刷新后的命令行要带上 `--service`（否则服务永远不报到）：{bin_path}"
+        );
+        assert_sc_options_are_separate(&commands);
     }
 
     #[test]
@@ -1750,6 +1811,19 @@ mod tests {
             Some(r"C:\Program Files\peon-burrow\burrow.exe")
         );
         assert!(query.contains("RUNNING"), "（夹具自检）");
+    }
+
+    #[test]
+    fn the_last_exit_code_comes_from_sc_query() {
+        // 真机形状（字段名不本地化，冒号后是十进制 + 十六进制）
+        let stopped = "SERVICE_NAME: peon-burrow\n        STATE              : 1  STOPPED\n        WIN32_EXIT_CODE    : 3  (0x3)\n";
+        assert_eq!(inspect_sc_exit_code(stopped), Some(3));
+
+        let clean = "        WIN32_EXIT_CODE    : 0  (0x0)";
+        assert_eq!(inspect_sc_exit_code(clean), Some(0));
+
+        // 读不出来就是读不出来：`None` 比谎报 0 好（界面会把 0 当成「上次干净退出」）
+        assert_eq!(inspect_sc_exit_code("SERVICE_NAME: peon-burrow"), None);
     }
 
     #[test]

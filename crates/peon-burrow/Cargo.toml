@@ -49,6 +49,12 @@ bin-dir = "{ bin }{ binary-ext }"
 [package.metadata.docs.rs]
 all-features = true
 
+# Windows 服务入口：`define_windows_service!` / `service_dispatcher::start` /
+# `service_control_handler::register`。**只有 Windows 目标需要**（systemd / launchd
+# 直接跑进程，不需要进程内握手）。
+[target.'cfg(windows)'.dependencies]
+windows-service = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use peon_burrow_core::{RelayServer, TlsConfig};
 use peon_burrow_ipc::{AuthPolicy, ControlClient, ControlEndpoint, Listener, serve};
@@ -26,8 +27,20 @@ pub fn verbose_flag() -> Arc<AtomicBool> {
     Arc::clone(VERBOSE.get_or_init(|| Arc::new(AtomicBool::new(false))))
 }
 
-/// 同步入口：`main` 只调它。
+/// 同步入口：`main` 只调它（前台形态）。
 pub fn run(cli: Cli) -> ExitCode {
+    run_with(cli, None)
+}
+
+/// 服务形态的入口：服务线程调它（见 [`crate::service`]）。
+///
+/// 与 [`run`] 的唯一差别是「停止信号从哪来」—— 服务进程没有控制台，Ctrl+C 永远不会来。
+pub(crate) fn run_service_worker(cli: Cli, stop: crate::service::ServiceStop) -> ExitCode {
+    run_with(cli, Some(stop))
+}
+
+/// 带可选「服务管理器停止信号」的入口。
+fn run_with(cli: Cli, stop: Option<crate::service::ServiceStop>) -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -39,7 +52,7 @@ pub fn run(cli: Cli) -> ExitCode {
         }
     };
     runtime.block_on(async move {
-        match dispatch(cli).await {
+        match dispatch_stopping(cli, stop).await {
             Ok(code) => code,
             Err(error) => {
                 // 人话 + 下一步：stdout 是给人看的，不在这里打 JSON
@@ -53,23 +66,48 @@ pub fn run(cli: Cli) -> ExitCode {
     })
 }
 
-/// 定位路径、读配置、装日志，然后分发。
+/// 定位路径、读配置、装日志，然后分发（前台形态）。
 pub async fn dispatch(cli: Cli) -> Result<ExitCode, AppError> {
-    let paths = Paths::discover()?;
+    dispatch_stopping(cli, None).await
+}
+
+/// 同上，但带上「服务管理器要求停下」的信号（服务形态走这条）。
+async fn dispatch_stopping(
+    cli: Cli,
+    stop: Option<crate::service::ServiceStop>,
+) -> Result<ExitCode, AppError> {
+    // 服务形态必须把数据目录固定下来（LocalSystem 与登录用户的 `ProjectDirs` 不是同一个），
+    // 见 `Paths::discover_with_data_dir`。
+    let paths = Paths::discover_with_data_dir(cli.data_dir.as_deref())?;
     let config = Config::load(&paths, &EnvSource::from_env(), &cli.overrides())?;
-    dispatch_with(&paths, config, cli).await
+    dispatch_with_stop(&paths, config, cli, stop).await
 }
 
 /// 注入路径与配置的分发（测试走这条，不碰真实用户目录）。
 pub async fn dispatch_with(paths: &Paths, config: Config, cli: Cli) -> Result<ExitCode, AppError> {
-    init_logging(config.log_level, config.relay.trace);
+    dispatch_with_stop(paths, config, cli, None).await
+}
+
+/// 注入路径、配置、服务停止信号的分发。
+async fn dispatch_with_stop(
+    paths: &Paths,
+    config: Config,
+    cli: Cli,
+    stop: Option<crate::service::ServiceStop>,
+) -> Result<ExitCode, AppError> {
+    // 服务形态没有终端：日志**必须**落盘，否则出问题只能靠猜（`service-lifecycle.md § 3`）。
+    let service_form = cli.service.is_some();
+    let log_file = service_form.then(|| paths.log_file());
+    init_logging(config.log_level, config.relay.trace, log_file.as_deref());
     for warning in config.startup_warnings() {
         warn!("{warning}");
     }
 
     match cli.command.clone() {
         None | Some(Command::Status) => status(paths, cli.json).await,
-        Some(Command::Run { no_control }) => run_relay(paths, config, no_control).await,
+        Some(Command::Run { no_control }) => {
+            run_relay(paths, config, no_control, service_form, stop).await
+        }
         Some(Command::Doctor { verbose }) => doctor_command(paths, &config, verbose, cli.json),
         Some(Command::Version) => version(cli.json),
         Some(Command::Url) => url(&config, cli.json),
@@ -104,7 +142,9 @@ pub async fn dispatch_with(paths: &Paths, config: Config, cli: Cli) -> Result<Ex
 ///
 /// trace 的开关是**运行期可翻**的（`burrow trace` 会翻它），所以过滤器读一个原子量，
 /// 而不是在启动时把级别写死。
-pub fn init_logging(level: LogLevel, trace: bool) {
+///
+/// `log_file` 给了就**同时**往文件写一份（服务形态：没有终端，stderr 等于扔掉）。
+pub fn init_logging(level: LogLevel, trace: bool, log_file: Option<&std::path::Path>) {
     let verbose = verbose_flag();
     verbose.store(trace, Ordering::Relaxed);
 
@@ -119,16 +159,46 @@ pub fn init_logging(level: LogLevel, trace: bool) {
     let filter = tracing_subscriber::filter::filter_fn(move |metadata| {
         *metadata.level() <= max || verbose.load(Ordering::Relaxed)
     });
-    let layer = tracing_subscriber::fmt::layer()
+
+    let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
+        .with_filter(filter.clone());
+
+    // 服务形态：没有终端，唯一的证据就是这个文件（`logging-and-diagnostics.md § 1`）。
+    // ⏳ 按大小滚动（`log_max_mib` / `log_keep_files`）还没实现，暂时是不滚动的单文件。
+    let Some(path) = log_file else {
+        // 已经初始化过（测试里会多次调用）就忽略
+        let _ = tracing_subscriber::registry().with(stderr_layer).try_init();
+        return;
+    };
+
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(tracing_appender::rolling::never(
+            path.parent().unwrap_or_else(|| std::path::Path::new(".")),
+            path.file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("peon-burrow.log")),
+        ))
         .with_filter(filter);
 
     // 已经初始化过（测试里会多次调用）就忽略
-    let _ = tracing_subscriber::registry().with(layer).try_init();
+    let _ = tracing_subscriber::registry()
+        .with(stderr_layer)
+        .with(file_layer)
+        .try_init();
 }
 
-/// `burrow run`：前台跑中继 + 控制面，直到 Ctrl+C 或收到 stop（控制面请求）。
-async fn run_relay(paths: &Paths, config: Config, no_control: bool) -> Result<ExitCode, AppError> {
+/// `burrow run`：前台跑中继 + 控制面，直到 Ctrl+C、控制面 `stop`、或服务管理器要求停下。
+async fn run_relay(
+    paths: &Paths,
+    config: Config,
+    no_control: bool,
+    service_form: bool,
+    stop: Option<crate::service::ServiceStop>,
+) -> Result<ExitCode, AppError> {
     paths.ensure_dirs()?;
 
     let options = config.relay_options();
@@ -142,7 +212,7 @@ async fn run_relay(paths: &Paths, config: Config, no_control: bool) -> Result<Ex
 
     // 控制面：token 每次启动重新生成（旧文件里的 token 随之作废）
     let token = random_hex(32);
-    let endpoint = control_endpoint(&config, &token);
+    let endpoint = control_endpoint(&config, &token, service_form);
     // 没有控制面时也要有个信号源，select! 才不用分叉
     let (lifecycle_tx, lifecycle_rx) = tokio::sync::watch::channel(None::<Lifecycle>);
 
@@ -261,12 +331,33 @@ async fn run_relay(paths: &Paths, config: Config, no_control: bool) -> Result<Ex
                 }
             }
         };
+        // 服务管理器的控制码（Windows 是 SCM 的 `SERVICE_CONTROL_STOP`）。
+        let service_stop = async move {
+            match stop {
+                Some(mut stop) => {
+                    stop.requested().await;
+                    Lifecycle::Stop
+                }
+                // 前台形态没有服务管理器：这一支永远不完成
+                None => std::future::pending().await,
+            }
+        };
+        // ⚠️ 服务形态**不能**等 Ctrl+C：服务进程没有控制台，`SetConsoleCtrlHandler` 会失败，
+        // 而这个 future 一失败就立刻完成 —— 表现是「服务刚起来就停」。
+        let interrupt = async move {
+            if service_form {
+                std::future::pending::<()>().await
+            } else {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        };
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
+            _ = interrupt => {
                 info!("收到 Ctrl+C，正在停止");
                 Lifecycle::Stop
             }
             action = stop_signal => action,
+            _ = service_stop => Lifecycle::Stop,
         }
     };
 
@@ -279,10 +370,10 @@ async fn run_relay(paths: &Paths, config: Config, no_control: bool) -> Result<Ex
     })
 }
 
-/// 控制面地址：优先本地 socket，系统服务模式下退到 loopback TCP。
-fn control_endpoint(config: &Config, token: &str) -> ControlEndpoint {
-    if config.service.level == peon_burrow_ipc_types::ServiceLevel::System {
-        // 系统服务与用户进程处于不同的完整性级别，命名管道会被 ACL 挡住
+/// 控制面地址：优先本地 socket，**服务形态**退到 loopback TCP。
+fn control_endpoint(config: &Config, token: &str, service_form: bool) -> ControlEndpoint {
+    if service_form || config.service.level == peon_burrow_ipc_types::ServiceLevel::System {
+        // 服务与用户进程处于不同的会话 / 完整性级别，命名管道会被 ACL 挡住
         ControlEndpoint::loopback_tcp(0, token)
     } else {
         ControlEndpoint::local_socket("peon-burrow", token)
@@ -495,8 +586,80 @@ fn status_at_either_level(
     Ok(status)
 }
 
+/// 装完等中继就绪的上限（`service-lifecycle.md § 3` 第 8 步：15 秒，每 500ms 一次）。
+const RELAY_READY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// 注册进服务管理器（SCM / 计划任务 / launchd / systemd）的**命令行参数**。
+///
+/// | 级别 | 参数 |
+/// | --- | --- |
+/// | 用户级 | `run` |
+/// | 系统级 | `run --service <名字> --config <路径> --data-dir <目录>` |
+///
+/// ⚠️ 系统级这几个参数都不是装饰：
+///
+/// - `--service <名字>`：Windows 上 SCM 拉起的进程**必须报到**（起 dispatcher、转
+///   `SERVICE_RUNNING`），不报到就是 `sc start` 的 1053 —— 服务装得上、永远起不来；
+///   而在别的平台上它表示「服务形态」（没有终端 → 日志落盘、控制面走 loopback TCP）；
+/// - `--config` / `--data-dir`：系统服务跑在 `LocalSystem`（或 root）下，
+///   按平台惯例推出来的配置目录与数据目录是**那个账户**的，与桌面端（登录用户）
+///   读的不是同一个 —— 界面会永远显示「已安装，未运行」，扩展里填的地址/token
+///   也与服务实际用的那份对不上。把安装者当时的路径写死进注册信息，
+///   服务起来后就与桌面端对齐。
+///
+/// 用户级不需要这些：计划任务 / LaunchAgent / `systemd --user` 都跑在登录用户下，
+/// 按惯例推出来的路径本来就与桌面端一致。
+fn service_args(
+    level: peon_burrow_ipc_types::ServiceLevel,
+    name: &str,
+    paths: &Paths,
+) -> Vec<String> {
+    let mut args = vec!["run".to_owned()];
+    if level != peon_burrow_ipc_types::ServiceLevel::System {
+        return args;
+    }
+    args.push("--service".to_owned());
+    args.push(name.to_owned());
+    args.push("--config".to_owned());
+    args.push(paths.config_file().display().to_string());
+    args.push("--data-dir".to_owned());
+    args.push(paths.data_dir().display().to_string());
+    args
+}
+
+/// 等中继的控制面应答一次（超时 15 秒，500ms 一次）。
+///
+/// 为什么值得等：注册与启动都成功**不等于**中继在跑 —— 配置错、端口被占、
+/// 服务进程没报到，都是启动之后才发生的事。不等的话用户看到的是「装好了」，
+/// 而扩展一个字都收不到（`service-lifecycle.md § 3` 第 8 / 9b 步）。
+async fn wait_until_ready(paths: &Paths, timeout: Duration) -> Result<(), AppError> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let answered = match read_endpoint(paths) {
+            Some(endpoint) => ControlClient::new(endpoint)
+                .request(Request::Ping)
+                .await
+                .is_ok(),
+            None => false,
+        };
+        if answered {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(AppError::Runtime(format!(
+                "服务已注册，但 {} 秒内连不上中继的控制面：多半是配置或端口的问题。\n\
+                 看日志：{}\n\
+                 看服务：`burrow service status`（`lastExitCode` 非 0 就是它启动后立刻退了）",
+                timeout.as_secs(),
+                paths.log_file().display()
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
 async fn service_command(
-    _paths: &Paths,
+    paths: &Paths,
     config: &Config,
     command: ServiceCommand,
     json: bool,
@@ -546,26 +709,72 @@ async fn service_command(
             })?;
             std::fs::create_dir_all(&install_dir)?;
 
+            let host = peon_burrow_service::native_for(level);
+
+            // ⚠️ 先停掉旧实例再复制：Windows 上正在运行的 exe 映像没放开，直接覆盖会得到
+            // 「另一个程序正在使用此文件」，而用户看到的是一句毫无线索的 IO 错误。
+            // 停不下来不算失败（本来就没装 / 没在跑）。
+            if let Err(error) = host.stop() {
+                tracing::debug!(%error, "停止旧实例失败（继续安装）");
+            } else {
+                // `sc stop` / `schtasks /End` 只是**请求**停止，返回时进程可能还在退出 ——
+                // 不等它放开 exe 映像，紧接着的复制会失败（`service-lifecycle.md § 4` 第 1 步）。
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while std::time::Instant::now() < deadline
+                    && host.status().map(|status| status.running).unwrap_or(false)
+                {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+
+            // 换级别安装时另一级可能还在跑（两级本来就可以同时装着）：也停掉它 ——
+            // 同一个安装目录里的 exe 映像被锁住，复制一定失败。
+            // 停不下来不算失败（没装 / 没权限），复制那一步会给出可照做的错误文案。
+            let other = match level {
+                peon_burrow_ipc_types::ServiceLevel::User => {
+                    peon_burrow_ipc_types::ServiceLevel::System
+                }
+                peon_burrow_ipc_types::ServiceLevel::System => {
+                    peon_burrow_ipc_types::ServiceLevel::User
+                }
+            };
+            if let Err(error) = peon_burrow_service::native_for(other).stop() {
+                tracing::debug!(%error, "停止另一级实例失败（继续安装）");
+            }
+
             let binary = install_dir.join(exe_file_name());
             let current = std::env::current_exe()?;
             if current != binary {
-                std::fs::copy(&current, &binary)?;
+                std::fs::copy(&current, &binary).map_err(|error| {
+                    AppError::Runtime(format!(
+                        "把可执行文件复制到安装目录失败（{} → {}）：{error}\n\
+                         下一步：先 `burrow service stop`（系统服务要管理员），再重试安装",
+                        current.display(),
+                        binary.display()
+                    ))
+                })?;
                 info!(from = %current.display(), to = %binary.display(), "已把可执行文件复制到安装目录");
             }
 
-            let host = peon_burrow_service::native_for(level);
             let options = peon_burrow_service::InstallOptions {
                 name: config.service.name.clone(),
                 level,
                 autostart,
                 binary_path: binary.clone(),
-                args: vec!["run".to_owned()],
+                args: service_args(level, &config.service.name, paths),
                 mode: peon_burrow_service::RunMode::Service,
             };
             host.install(&options).map_err(service_error)?;
             // 装完自检：失败重启策略**真的**写进去了吗（不然服务崩了就回不来）
             host.verify_restart_policy().map_err(service_error)?;
+            // 启动之前把发现文件清掉：它是「控制面在跑」的证据，
+            // 留上一次的（崩溃残留）会让我们把「没起来」误判成「起来了」。
+            let _ = std::fs::remove_file(paths.control_file());
             host.start().map_err(service_error)?;
+            // `sc start` / `schtasks /Run` 只保证「进程被拉起来了」：
+            // 配置错、端口被占、服务没报到都是**之后**才发生的。等控制面应答一次
+            // 才算真的装好（`service-lifecycle.md § 3` 第 8 步 + 第 9b 步）。
+            wait_until_ready(paths, RELAY_READY_TIMEOUT).await?;
 
             if json {
                 print_json(&serde_json::json!({
@@ -1011,12 +1220,79 @@ mod tests {
     #[test]
     fn the_endpoint_prefers_a_local_socket_but_falls_back_for_system_level() {
         let (directory, _paths, mut config) = fixture("");
-        let endpoint = control_endpoint(&config, "t");
+        let endpoint = control_endpoint(&config, "t", false);
         assert_eq!(endpoint.kind, peon_burrow_ipc::TransportKind::LocalSocket);
 
         config.service.level = peon_burrow_ipc_types::ServiceLevel::System;
-        let endpoint = control_endpoint(&config, "t");
+        let endpoint = control_endpoint(&config, "t", false);
         assert_eq!(endpoint.kind, peon_burrow_ipc::TransportKind::LoopbackTcp);
+        drop(directory);
+    }
+
+    #[test]
+    fn the_service_form_always_uses_loopback_tcp() {
+        // 服务形态不看配置里的 `[service] mode`：桌面端（登录用户、中完整性）要能连上
+        // 跑在 LocalSystem 下的中继，命名管道会被 ACL 挡住。
+        let (directory, _paths, config) = fixture("");
+        let endpoint = control_endpoint(&config, "t", true);
+        assert_eq!(endpoint.kind, peon_burrow_ipc::TransportKind::LoopbackTcp);
+        drop(directory);
+    }
+
+    #[test]
+    fn user_level_registration_keeps_the_plain_run_command() {
+        // 用户级（计划任务 / LaunchAgent / systemd --user）跑在登录用户下，
+        // 按惯例推出来的路径与桌面端一致 —— 不要往注册信息里塞路径（改了就等于改了
+        // 那些平台单元文件的正文，收益为零）。
+        let (directory, paths, _config) = fixture("");
+        assert_eq!(
+            service_args(
+                peon_burrow_ipc_types::ServiceLevel::User,
+                "peon-burrow",
+                &paths
+            ),
+            vec!["run"]
+        );
+        drop(directory);
+    }
+
+    #[test]
+    fn system_level_registration_pins_the_service_form_and_the_installers_paths() {
+        // 系统级必须把这三样写进注册信息：
+        // ① `--service <名字>`（Windows 上 SCM 靠它报到，缺了就是 sc start 的 1053）；
+        // ② `--config` ③ `--data-dir`（服务跑在 LocalSystem / root 下，
+        //    按惯例推出来的目录与桌面端读的那个不是同一个）。
+        let (directory, paths, _config) = fixture("");
+        let args = service_args(
+            peon_burrow_ipc_types::ServiceLevel::System,
+            "peon-burrow",
+            &paths,
+        );
+
+        assert_eq!(args[0], "run", "{args:?}");
+        let value_of = |flag: &str| {
+            args.iter()
+                .position(|arg| arg == flag)
+                .and_then(|index| args.get(index + 1))
+                .cloned()
+        };
+        let config_file = paths.config_file().display().to_string();
+        let data_dir = paths.data_dir().display().to_string();
+        assert_eq!(
+            value_of("--service").as_deref(),
+            Some("peon-burrow"),
+            "{args:?}"
+        );
+        assert_eq!(
+            value_of("--config").as_deref(),
+            Some(config_file.as_str()),
+            "{args:?}"
+        );
+        assert_eq!(
+            value_of("--data-dir").as_deref(),
+            Some(data_dir.as_str()),
+            "{args:?}"
+        );
         drop(directory);
     }
 }

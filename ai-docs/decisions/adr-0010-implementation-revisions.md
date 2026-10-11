@@ -135,6 +135,51 @@
 有任意一条 `FAIL` → 退出码 `2`（与配置错误一致，脚本能直接用）；只有 `WARN` → `0`。
 「端口被占」是 `WARN` 而不是 `FAIL`：中继可能正在跑，那本来就是正常的。
 
+## 16. Windows 服务**入口**是后来补的；系统服务的路径要显式写进注册信息
+
+这一条是**真机故障**逼出来的：`service install --mode system` 装得上（`sc create` 成功、
+失败重启策略自检通过），紧接着的 `sc start` 报 **1053**「服务没有及时响应启动或控制请求」。
+
+- 文档：`02-tech-stack.md § 1` 把 `windows-service` 写成「服务入口 + SCM 管理」都交给它，
+  `adr-0003` 也写了「SCM 与 CLI 共用同一入口（dispatcher 跑在独立线程上）」
+- 实际（故障时）：只用它……**一处都没用** —— 注册那一半走了 `sc.exe`
+  （`peon-burrow-service`，这是对的），而「服务进程内部」那一半**根本没人写**：
+  全仓库没有 `StartServiceCtrlDispatcher`。于是 SCM 拉起的进程只是前台 `burrow run`，
+  永远不会报到，30 秒后被判超时 → 1053。
+- 实际（现在）：
+
+| 关注点 | 落点 |
+| --- | --- |
+| 服务入口（dispatcher / 控制码 / 状态上报） | `crates/peon-burrow/src/service.rs`（`windows-service` 的**唯一**落点） |
+| 注册与启停 | `peon-burrow-service`（`sc.exe`），**不依赖** `windows-service` |
+| 「我是服务形态」这件事 | 命令行 `--service <名字>`（隐藏参数，由 `service install` 写进注册信息） |
+| 停止 | SCM 的 `SERVICE_CONTROL_STOP` → 「请中继优雅退出」的 `watch` 信号（不是直接杀进程） |
+| 退出码与重启 | 干净停下**报** `SERVICE_STOPPED`；非零退出**故意不报**（`sc failure` 的重启动作只在「没报 STOPPED 就退出」时执行） |
+| 收尾 | 必须**自己 `process::exit()`**，不能只从 `service_main` return（见下） |
+| 日志 | 服务形态没有终端 → 同时写 `<data-dir>/logs/peon-burrow.log`（⏳ 滚动还没做） |
+
+⚠️ 第二条的坑（真机踩过，第一版就是错的）：**`StartServiceCtrlDispatcherW` 不会因为服务停了就返回**
+—— 它等到「进程里所有服务都停了」才返回，而判据是服务**报了 STOPPED**。
+非零退出那条路故意不报，于是 dispatcher 永远阻塞、进程永远不退：`sc query` 一直显示
+`RUNNING`、端口没人监听、`control.json` 也没了 —— 一个既不干活也不退出的僵尸，
+而且它还锁着安装目录里的 exe，下一次安装复制不进去。
+所以 `service_main` 收尾必须显式 `std::process::exit(code)`（约定 C2「退出码只有一个来源」
+的**唯一例外**：这一刻不退，就永远退不了）。
+
+⚠️ 补入口时暴露的第二个问题：**`Paths::discover()` 是按调用进程的身份解析的**，
+而系统服务跑在 `LocalSystem` 下 → 配置 / 日志 / `control.json` 全落到系统账户的
+`…\config\systemprofile\AppData\…`，桌面端（登录用户）读的是自己的目录。
+症状是「服务在跑，界面永远显示已安装未运行」，扩展里填的 token 也与服务实际用的那份不一致。
+所以系统级安装会把**安装者当时**的 `--config` / `--data-dir` 一起写进注册信息
+（`Paths::discover_with_data_dir`，见 `service-lifecycle.md § 2.1`）。
+
+- 影响：`design/config-schema.md § 4` 加 `--data-dir` / `--service`；
+  `service-lifecycle.md` 加 § 2.1 与 § 3 的实现状态表；
+  `02-tech-stack.md § 1` 的 `windows-service` 一行收窄为「只用服务入口」。
+- 待办：`service install` 的自检失败目前**不回滚**（只报错，理由见 `service-lifecycle.md § 3`）、
+  日志按大小滚动（`log_max_mib` / `log_keep_files` 还没接上）、
+  Linux/macOS 的系统级路径同理由现在起也会显式写进 unit / plist（本机无法验证）。
+
 ---
 
 ## 对发布的影响

@@ -53,6 +53,10 @@ directories = "6.0"
 url = "2.5"
 
 # --- 控制面 / 服务 / 更新（后续阶段用） ---
+# Windows 服务**入口**（SCM dispatcher + 控制码处理）。只在 `peon-burrow` 的 Windows 目标上用：
+# 它管的是「服务进程内部」；`peon-burrow-service` 管的是「外部注册」（走 `sc.exe`，不依赖它）。
+# 没有它的话 `sc create` 装出来的服务永远不报到 → `sc start` 报 1053（真机踩过）。
+windows-service = "0.8.1"
 interprocess = "2.4"
 sysinfo = "0.39"
 sha2 = "0.11"

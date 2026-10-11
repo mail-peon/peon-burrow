@@ -13,6 +13,7 @@ pub mod doctor;
 pub mod exit;
 pub mod paths;
 pub mod run;
+pub mod service;
 pub mod update;
 
 pub use cli::{Cli, Command, ServiceCommand};

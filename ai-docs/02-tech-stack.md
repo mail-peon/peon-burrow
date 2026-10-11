@@ -16,7 +16,7 @@
 | WebSocket 服务端 | `tokio-tungstenite` | 0.2x 最新 | MIT/Apache-2.0 | 与 tokio 同族；`Message::Binary/Text/Close` 直接对应线上协议 |
 | TLS 客户端 | `tokio-rustls` + `rustls` | 0.2x / 0.23.x | MIT/Apache-2.0 | 993 是 implicit TLS；rustls 无 OpenSSL 依赖，交叉编译/静态链接友好 |
 | 根证书 | `rustls-platform-verifier`（首选）/ `webpki-roots`（兜底） | 版本待核 | MIT/Apache-2.0 | **用系统信任库**：企业自建根、用户手动导入的证书都能像系统一样生效；`webpki-roots` 只认 Mozilla 列表 |
-| Windows 服务（跑 + 管 SCM） | `windows-service` | 0.8.1 | MIT OR Apache-2.0 | 唯一同时提供「服务入口 + SCM 管理（创建/删除/启停/失败动作）」的 crate |
+| Windows 服务（跑 + 管 SCM） | `windows-service` | 0.8.1 | MIT OR Apache-2.0 | 唯一同时提供「服务入口 + SCM 管理（创建/删除/启停/失败动作）」的 crate。⚠️ 本仓库**只用它的服务入口**（`define_windows_service!` + `service_dispatcher` + `service_control_handler`，落点 `crates/peon-burrow/src/service.rs`）；创建 / 删除 / 启停 / 失败动作一律走 `sc.exe`（`peon-burrow-service`），于是注册那一半完全不依赖它 |
 | macOS / Linux 服务注册 | `service-manager` | 0.11.0 | MIT OR Apache-2.0 | 生成 launchd plist / systemd unit 并调 `launchctl` / `systemctl`；`ServiceLevel::User\|System` 两档 |
 | Windows 用户级自启 | **自己实现**（任务计划程序，走 `windows` crate 或 `schtasks /XML`） | —— | —— | 见 § 3.2：HKCU `Run` 会让控制台程序**闪一个黑框**，不能接受 |
 | 控制面（类型层） | `serde` + `serde_json` | 1.x | MIT/Apache-2.0 | **只依赖这两个** → `peon-burrow-ipc-types`；桌面端能单独拿类型 |

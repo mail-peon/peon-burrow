@@ -27,6 +27,22 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
+    /// 数据目录（控制面发现文件、日志、状态快照都落在这里）。
+    ///
+    /// 默认按平台惯例（Windows 是 `%LOCALAPPDATA%\peon-burrow`）。**系统服务必须显式给**：
+    /// 服务跑在 `LocalSystem` 下，按惯例推出来的会是系统账户的目录，
+    /// 与桌面端（登录用户）读的那个对不上，界面就会永远显示「已安装，未运行」。
+    /// `service install` 会把安装者当时的数据目录写进服务命令行。
+    #[arg(long, global = true, value_name = "PATH")]
+    pub data_dir: Option<PathBuf>,
+
+    /// 以**服务形态**运行（服务管理器拉起的进程：没有终端、日志落盘），值是服务名。
+    ///
+    /// 这是内部参数：`service install` 会把它写进注册信息，用户不需要手敲；
+    /// 前台跑用 `burrow run`。Windows 上它同时决定 SCM 的 dispatcher 用哪个名字报到。
+    #[arg(long, global = true, value_name = "NAME", hide = true)]
+    pub service: Option<String>,
+
     /// 监听地址。
     #[arg(long, global = true, value_name = "HOST")]
     pub host: Option<String>,

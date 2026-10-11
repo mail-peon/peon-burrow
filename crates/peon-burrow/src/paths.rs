@@ -24,13 +24,25 @@ impl Paths {
     /// | macOS | `~/Library/Application Support/peon-burrow/` | 同上 |
     /// | Linux | `~/.config/peon-burrow/` | `~/.local/share/peon-burrow/` |
     pub fn discover() -> Result<Self, AppError> {
+        Self::discover_with_data_dir(None)
+    }
+
+    /// 同上，但允许把**数据目录**换成给定的那个（服务形态用）。
+    ///
+    /// ⚠️ 为什么服务形态必须显式给：`directories` 是按**调用进程的身份**解析的，
+    /// 而 Windows 系统服务跑在 `LocalSystem` 下 —— 推出来的是
+    /// `…\config\systemprofile\AppData\…`，桌面端（登录用户）读的是自己的目录。
+    /// 两边对不上，界面就会永远显示「已安装，未运行」，日志也落在没人会看的地方。
+    /// 安装时把**安装者当时**的数据目录写进服务命令行（`--data-dir`），服务启动后
+    /// 就与控制面发现文件、日志、配置对齐（配置本身走 `--config`）。
+    pub fn discover_with_data_dir(data_dir: Option<&Path>) -> Result<Self, AppError> {
         let project = directories::ProjectDirs::from("", "", "peon-burrow").ok_or_else(|| {
             AppError::Config("无法确定用户配置目录（HOME / APPDATA 都读不到）".to_owned())
         })?;
-        Ok(Self::from_roots(
-            project.data_local_dir(),
-            project.config_dir(),
-        ))
+        let data = data_dir
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| project.data_local_dir().to_path_buf());
+        Ok(Self::from_roots(data, project.config_dir()))
     }
 
     /// 测试用：所有文件都落在一个临时目录下。

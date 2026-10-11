@@ -170,6 +170,19 @@ burrow <命令>
   completion <shell>
 ```
 
+全局参数（任何子命令都能用）：
+
+| 参数 | 作用 |
+| --- | --- |
+| `--config <path>` | 指定配置文件（默认见 § 1） |
+| `--data-dir <path>` | 指定**数据目录**（日志、`control.json`、状态快照）。默认按平台惯例推 |
+| `--service <名字>` | **内部参数**（`hide`，不出现在 `--help`）：以服务形态运行。由 `service install` 写进注册信息，用户不需要手敲 —— Windows 上它同时决定 SCM dispatcher 用哪个名字报到（见 [`../service-lifecycle.md § 3`](../service-lifecycle.md)） |
+
+⚠️ `--data-dir` 存在的唯一理由是**系统服务**：`directories` 按调用进程的身份解析，
+Windows 系统服务跑在 `LocalSystem` 下 → 推出来的是系统账户的目录，与桌面端（登录用户）
+读的那个不是同一个。`service install --mode system` 会把安装者当时的
+`--config` / `--data-dir` 一起写进服务命令行（ADR-0010 § 16）。
+
 退出码是 **`peon_burrow::ExitCode`** 枚举（唯一来源，见 `modules.md § 7`）——
 `main` 与各层模块**都不许**硬编码数字；自更新完成后返回 `RestartRequested = 5`。
 

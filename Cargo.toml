@@ -57,6 +57,10 @@ url = "2.5"
 # 它管的是「服务进程内部」；`peon-burrow-service` 管的是「外部注册」（走 `sc.exe`，不依赖它）。
 # 没有它的话 `sc create` 装出来的服务永远不报到 → `sc start` 报 1053（真机踩过）。
 windows-service = "0.8.1"
+# 把 .ico 嵌进 exe（`burrow.exe` 的图标）。**构建依赖**，只在 Windows 目标上拉。
+# `default-features = false`：默认的 `toml` feature 只为读 `winresource.toml` 配置，
+# 我们只用 `set_icon` + `compile`，关掉它少四个构建依赖（toml / serde_core / winnow …）。
+winresource = { version = "0.1", default-features = false }
 interprocess = "2.4"
 sysinfo = "0.39"
 sha2 = "0.11"

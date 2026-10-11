@@ -55,6 +55,12 @@ all-features = true
 [target.'cfg(windows)'.dependencies]
 windows-service = { workspace = true }
 
+# 把 `icons/icon.ico` 嵌进 `burrow.exe`（任务管理器 / 服务列表里的图标）。
+# ⚠️ 它只在**目标平台是 Windows** 时才被拉进来：CI 在 Linux 上做
+# `--target x86_64-pc-windows-msvc` 检查时不该去调 `rc.exe`（见 build.rs 的两道闸）。
+[target.'cfg(windows)'.build-dependencies]
+winresource = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

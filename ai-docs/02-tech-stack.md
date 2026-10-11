@@ -19,6 +19,7 @@
 | Windows 服务（跑 + 管 SCM） | `windows-service` | 0.8.1 | MIT OR Apache-2.0 | 唯一同时提供「服务入口 + SCM 管理（创建/删除/启停/失败动作）」的 crate。⚠️ 本仓库**只用它的服务入口**（`define_windows_service!` + `service_dispatcher` + `service_control_handler`，落点 `crates/peon-burrow/src/service.rs`）；创建 / 删除 / 启停 / 失败动作一律走 `sc.exe`（`peon-burrow-service`），于是注册那一半完全不依赖它 |
 | macOS / Linux 服务注册 | `service-manager` | 0.11.0 | MIT OR Apache-2.0 | 生成 launchd plist / systemd unit 并调 `launchctl` / `systemctl`；`ServiceLevel::User\|System` 两档 |
 | Windows 用户级自启 | **自己实现**（任务计划程序，走 `windows` crate 或 `schtasks /XML`） | —— | —— | 见 § 3.2：HKCU `Run` 会让控制台程序**闪一个黑框**，不能接受 |
+| Windows exe 图标 | `winresource`（`default-features = false`） | 0.1 | MIT | **构建依赖**，把 `crates/peon-burrow/icons/icon.ico` 嵌进 `burrow.exe`（任务管理器 / `services.msc` 里的图标）。只在目标平台是 Windows 时拉进依赖图，且只在构建机也是 Windows 时才真的调 `rc.exe`（CI 会在 Linux 上 `--target *-pc-windows-msvc` 检查，见 `build.rs` 的注释）。关掉默认的 `toml` feature：我们只用 `set_icon` + `compile`，少四个构建依赖 |
 | 控制面（类型层） | `serde` + `serde_json` | 1.x | MIT/Apache-2.0 | **只依赖这两个** → `peon-burrow-ipc-types`；桌面端能单独拿类型 |
 | 控制面（传输层） | `interprocess` | 2.4.4 | 0BSD OR Apache-2.0 | 一套代码覆盖命名管道与 UDS；`auto` 模式下另留 loopback TCP 退路 → `peon-burrow-ipc` |
 | 自更新 | `self_update`（features: `checksums` `signatures` `signature` `async`）+ 自研清单解析 | 1.3.0 | MIT | 校验和 + zipsign 验签 + **替换正在运行的自己**（内部用 `self-replace` 1.5.0） |
@@ -38,6 +39,12 @@
 **桌面端（`peon-hall` 仓库）**：`tauri` 2.12.2、`tauri-plugin-shell` 2.4.1、
 `tauri-plugin-process` 2.4.0；**不使用** `tauri-plugin-updater`（桌面端不检查更新，见
 [`adr-0006`](./decisions/adr-0006-desktop-installer.md)）。
+
+> **exe 图标怎么重做**：素材是 `.github/images/burrow.png`（300×300 透明 PNG，README 的概念图）。
+> `crates/peon-burrow/icons/icon.ico` 是它裁到内容 bbox、按最长边占画布 92% 居中之后导出的
+> 多尺寸 ico（16/24/32/48/64/128/256，Pillow 的 `img.save(path, sizes=[...])` 一行就够）。
+> 换了 `icon.ico` 要重新 `cargo build -p peon-burrow` 才会进 exe（`build.rs` 会跟着重跑）。
+> ⚠️ `peon-hall`（GUI）用的是**另一张图**（大厅），别把两个图标搞混。
 
 ---
 

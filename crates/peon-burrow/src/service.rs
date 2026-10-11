@@ -44,6 +44,12 @@ impl ServiceStop {
 }
 
 /// 信号端：由服务入口（控制码回调）持有。
+///
+/// ⚠️ 只在 **Windows** 上被构造（`stop_channel` 的调用点在 `windows_scm` 模块里）：
+/// Linux/macOS 的服务形态由服务管理器直接跑 `burrow run`，没有 SCM 那样的控制码通道。
+/// 非 Windows 构建里它是「存在但没人用」——`-D warnings` 会把 dead_code 当错误，
+/// 所以这里按平台放行（Windows 上仍然严格检查）。
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub(crate) struct ServiceStopHandle {
     tx: watch::Sender<bool>,
@@ -54,12 +60,16 @@ impl ServiceStopHandle {
     ///
     /// ⚠️ 会在 SCM 的**回调线程**上被调用，所以必须立刻返回（`watch` 的写入是同步的，
     /// 这也正是选它的原因）—— 在控制码回调里等中继退出，SCM 会以为服务卡死。
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn request_stop(&self) {
         self.tx.send_replace(true);
     }
 }
 
 /// 造一对「信号端 + 等待端」。
+///
+/// 调用点只有 Windows 的 SCM 那一半（理由见 [`ServiceStopHandle`]）。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn stop_channel() -> (ServiceStopHandle, ServiceStop) {
     let (tx, rx) = watch::channel(false);
     (ServiceStopHandle { tx }, ServiceStop { rx })

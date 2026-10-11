@@ -24,6 +24,11 @@ pub fn run(cli: Cli) -> ExitCode {
 /// 服务形态的入口：服务线程调它（见 [`crate::service`]）。
 ///
 /// 与 [`run`] 的唯一差别是「停止信号从哪来」—— 服务进程没有控制台，Ctrl+C 永远不会来。
+///
+/// ⚠️ 调用点在 Windows 的 SCM 那一半（`service.rs` 的 `windows_scm`）：Linux/macOS 的
+/// 服务形态由服务管理器直接跑 `burrow run`。非 Windows 构建里没人调它，而
+/// `-D warnings` 会把 dead_code 当错误 —— 按平台放行（Windows 上仍然严格检查）。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn run_service_worker(cli: Cli, stop: crate::service::ServiceStop) -> ExitCode {
     run_with(cli, Some(stop))
 }

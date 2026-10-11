@@ -129,7 +129,7 @@ impl RelayServer {
 2. **立刻建连**，不要等第一帧；**策略同步**，被拒连接不发一个字节；
 3. **背压用 `await`**（不用无界 channel，不叠 ws pause/resume）；
 4. **错误分类而非字符串匹配**；**公开 API 用 `Bytes`**（不出现 `Vec<u8>`）；
-5. **禁止 `std::sync::Mutex`**；每个 `await` 必须有超时或取消源。
+5. **禁止 `std::sync::Mutex`**（例外必须写 `C5-EXCEPTION` 说明，见 C5）；每个 `await` 必须有超时或取消源。
 
 ---
 
@@ -306,7 +306,7 @@ examples/
 | C2 | 退出码唯一来源 | `peon_burrow::ExitCode`；update 要重启时返回 `RestartRequested = 5` |
 | C3 | 错误分层 | 每层有自己的错误类型；`AppError` 只聚合 + `exit_code()`，不吞原因 |
 | C4 | 状态 vs 日志 | 状态走 `RelayState` / `ServiceStatus`；日志走 `tracing`。**不许从日志解析状态** |
-| C5 | 并发 | 禁 `std::sync::Mutex`；`tokio::sync` + `JoinSet` + `CancellationToken`；每个 `await` 有超时或取消源 |
+| C5 | 并发 | 禁 `std::sync::Mutex`；`tokio::sync` + `JoinSet` + `CancellationToken`；每个 `await` 有超时或取消源。⚠️ 例外要写 `C5-EXCEPTION` 说明（必须是**同步**路径、不跨 `await` 持锁）：目前只有 `core/src/state.rs` 的 `last_error` 与 `peon-burrow/src/logging.rs` 的滚动写入器；`ci.yaml` 的守卫按「代码行里出现它就要求它自己或上面三行内有该说明」检查（注释里提到这个词不算用法） |
 | C6 | 字节类型 | 公开 API 用 `bytes::Bytes` |
 | C7 | 注入 | `Paths` / 时钟 / 进程探测都是值或 trait |
 | C8 | 时间与超时 | 默认值集中在 `core`；用 `Duration` 不用裸 `u64` |

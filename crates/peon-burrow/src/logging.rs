@@ -10,8 +10,8 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use tracing_subscriber::Layer as _;
 use tracing_subscriber::layer::SubscriberExt;
@@ -129,7 +129,10 @@ struct RotatingWriter {
     path: PathBuf,
     max_bytes: u64,
     keep: usize,
-    state: Mutex<State>,
+    // C5-EXCEPTION: 这是**同步**的日志写入路径（`std::io::Write`），整条链上没有 `await`，
+    // 锁只在一次 `write` 内持有；跨线程并发也只在这把锁上排队（写日志本来就该串行）。
+    // 写全 `std::sync::Mutex` 是为了让 `ci.yaml` 的 C5 守卫**看得见**它（守卫按字面量匹配）。
+    state: std::sync::Mutex<State>,
 }
 
 #[derive(Debug)]
@@ -148,7 +151,8 @@ impl RotatingWriter {
             max_bytes: target.max_mib.saturating_mul(1024 * 1024),
             // 至少留当前这一个：keep = 0 的人想要的是「不要历史」，不是「不要日志」
             keep: usize::try_from(target.keep.max(1)).unwrap_or(usize::MAX),
-            state: Mutex::new(State {
+            // C5-EXCEPTION: 同上面 `state` 字段的说明 —— 同步写入路径，锁只在一次 `write` 内持有
+            state: std::sync::Mutex::new(State {
                 file: Some(file),
                 size,
             }),

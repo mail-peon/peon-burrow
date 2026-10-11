@@ -117,13 +117,33 @@ jobs:
 
           # 约定 C5：`std::sync::Mutex` 只允许在**非 async、且不跨 await 持锁**的地方出现，
           # 且每一处都必须带 `C5-EXCEPTION` 说明。数量对不上就说明有人新加了一处没留痕的锁。
-          usages=$(grep -rn 'std::sync::Mutex' crates --include='*.rs' | grep -vc 'C5-EXCEPTION' || true)
-          markers=$(grep -rn 'C5-EXCEPTION' crates --include='*.rs' | wc -l | tr -d ' ')
-          echo "std sync mutex usages: $usages / C5-EXCEPTION notes: $markers"
-          if [ "$usages" -gt "$markers" ]; then
-            echo "::error::C5 violation: a std::sync::Mutex usage has no C5-EXCEPTION note (holding a std lock across await blocks the runtime thread)"
-            grep -rn 'std::sync::Mutex' crates --include='*.rs' | grep -v 'C5-EXCEPTION'
-            fail=1
+          #
+          # ⚠️ 统计口径要扣掉两类**不是用法**的行，否则守卫一直是红的（历史遗留）：
+          #   1. 注释行 —— `runner.rs` 的文档里写着 `std::sync::Mutex` 这个词，那是在解释约定本身；
+          #   2. 说明写在**上一行**的情况 —— `state.rs` 的 C5-EXCEPTION 就在字段上面两行。
+          # 判据改成：**代码行**里出现它时，它自己或它上面三行内必须有 C5-EXCEPTION。
+          files=$(grep -rl 'std::sync::Mutex' crates --include='*.rs' || true)
+          if [ -n "$files" ]; then
+            awk '
+              {
+                window = prev3 "\n" prev2 "\n" prev1 "\n" $0
+                prev3 = prev2; prev2 = prev1; prev1 = $0
+                if ($0 ~ /std::sync::Mutex/ && $0 !~ /^[[:space:]]*(\/\/|\/\*|\*)/) {
+                  usages++
+                  if (window !~ /C5-EXCEPTION/) {
+                    print "::error::C5 violation: std::sync::Mutex has no C5-EXCEPTION note nearby"
+                    print "  " FILENAME ":" FNR ": " $0
+                    missing++
+                  }
+                }
+              }
+              END {
+                printf "std sync mutex code usages: %d (missing notes: %d)\n", usages + 0, missing + 0
+                exit (missing + 0 > 0 ? 1 : 0)
+              }
+            ' $files || fail=1
+          else
+            echo "std sync mutex code usages: 0 (missing notes: 0)"
           fi
 
           if [ "$fail" -ne 0 ]; then exit 1; fi

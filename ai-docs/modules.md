@@ -327,6 +327,11 @@ test "$(wc -l < crates/peon-burrow/src/main.rs)" -le 60
 # feature 矩阵：默认关也能编过
 cargo check -p peon-burrow-core --no-default-features
 cargo check -p peon-burrow      --no-default-features
+# 内部依赖版本必须与 workspace 版本一致：发版是 `cargo bumpp <level>`，它一次改这 7 处
+# （workspace 版本 + 6 条 [workspace.dependencies] 里指向自家 crate 的要求）。
+# 手改漏了的话，发包时后几个包会报 no matching package —— 看起来像网络问题。
+ws=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+test -z "$(grep -E '^peon-burrow-[a-z-]+ = \{ version = "' Cargo.toml | grep -v "version = \"$ws\"" || true)"
 ```
 
 ---

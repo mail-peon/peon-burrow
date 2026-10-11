@@ -109,12 +109,15 @@ jobs:
             echo "::error::L3 violation: peon-burrow-update must stay independent of the upper layers"; fail=1
           fi
 
-          # 版本脚本必须真的能跑（「改了 workspace 版本、漏了内部依赖版本」是最常见的发包事故：
-          # 表现是后面几个包报 no matching package，看起来像网络问题）
-          ./scripts/bump-version.sh 9.9.9 --dry-run > /dev/null
-          ./scripts/bump-version.sh 0.0.0 --dry-run > /dev/null
-          if ! git diff --exit-code -- Cargo.toml > /dev/null; then
-            echo "::error::bump-version.sh modified Cargo.toml during --dry-run"; fail=1
+          # 「改了 workspace 版本、漏了内部依赖版本」是最常见的发包事故：表现是后面几个包报
+          # no matching package，看起来像网络问题。发版工具是 `cargo bumpp`（一次改这 7 处），
+          # 这里直接断言那个不变量 —— 不依赖仓库里的任何脚本，谁手改都会被挡。
+          ws_version=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+          stale=$(grep -nE '^peon-burrow-[a-z-]+ = \{ version = "' Cargo.toml | grep -v "version = \"$ws_version\"" || true)
+          if [ -n "$stale" ]; then
+            echo "::error::internal dependency versions do not match the workspace version $ws_version"
+            echo "$stale"
+            fail=1
           fi
 
           # L5：bin 必须够薄

@@ -162,8 +162,16 @@ fn percent_decode(text: &str) -> String {
     let mut index = 0usize;
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
-            let hex = &text[index + 1..index + 3];
-            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+            // ⚠️ 在**字节**上取那两个 hex 字符再 `from_utf8`。
+            // 直接写 `&text[index + 1..index + 3]` 会在 `%` 后面跟多字节字符时
+            // （`/%好`、`/?token=%a好`）以「byte index is not a char boundary」**panic** ——
+            // 而这段输入来自 WebSocket 升级请求的 URI（`server.rs` 直接把
+            // `request.uri().to_string()` 喂进来），本机任意进程都能发。
+            // 真机复现过；这条对应 `ai-docs` 的「畸形路径按字面量处理」。
+            let hex = &bytes[index + 1..index + 3];
+            if let Ok(hex) = std::str::from_utf8(hex)
+                && let Ok(byte) = u8::from_str_radix(hex, 16)
+            {
                 out.push(byte);
                 index += 3;
                 continue;
@@ -254,6 +262,28 @@ mod tests {
         assert_eq!(resolve_target("/"), TargetResolve::NoTarget);
         assert_eq!(resolve_target(""), TargetResolve::NoTarget);
         assert_eq!(resolve_target("/?tls=1"), TargetResolve::NoTarget);
+    }
+
+    #[test]
+    fn malformed_percent_escapes_are_literal_and_never_panic() {
+        // 非法序列原样保留（文档承诺：畸形路径按字面量处理，不崩）
+        assert_eq!(percent_decode("%zz"), "%zz");
+        assert_eq!(percent_decode("%4"), "%4");
+        assert_eq!(percent_decode("%"), "%");
+
+        // ⚠️ `%` 后面跟**多字节字符**：从前这里 panic
+        //（`&text[index+1..index+3]` 落在字符中间）。输入来自升级请求的 URI，
+        // 本机任意进程都能发 —— 真机复现过。
+        assert_eq!(percent_decode("%好"), "%好");
+        assert_eq!(percent_decode("%a好"), "%a好");
+        assert_eq!(percent_decode("/%好"), "/%好");
+        // 经过 `resolve_target` 也不许 panic（它才是真正的入口）
+        let _ = resolve_target("/%好");
+        let _ = resolve_target("/?token=%a好");
+
+        // 合法的百分号序列照旧解码
+        assert_eq!(percent_decode("%41%42"), "AB");
+        assert_eq!(percent_decode("a%20b"), "a b");
     }
 
     #[test]

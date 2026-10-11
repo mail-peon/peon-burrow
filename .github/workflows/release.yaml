@@ -1,16 +1,18 @@
 # **本仓库唯一的自动化入口**：只由 `v*.*.*` tag 触发。
 #
 #   1) checks —— 复用 ci.yaml（三平台 lint/test/doc + MSRV + 布局守卫 + semver）
-#   2) verify —— tag 必须等于 workspace 版本 + 依赖顺序自检
+#   2) verify —— tag 必须等于 workspace 版本 + 发布计划可算（`cargo harbor plan`）
 #   3) assets —— 复用 assets.yaml（五个目标的产物 + latest.json + GitHub Release）
-#   4) crates —— dry-run 之后按序发到 crates.io
+#   4) crates —— 计划预览（dry-run）+ 打包清单，然后按依赖序发到 crates.io（harbor 驱动）
 #
 # 没有 push / pull_request / workflow_dispatch 入口：检查发生在发版那一刻。
-# 失败时**不要移动 tag** —— 修好之后从 Actions 页面重跑失败的 job 即可
-# （重跑不需要重新触发，所以 tag 不用动）。
+# 失败时**不要移动 tag** —— 修好之后从 Actions 页面重跑失败的 job 即可。
+# ⚠️ 「重跑能续发」的前提是 harbor 的「已发布即视为完成」语义（`AlreadyPublished` 算成功）：
+#    别把下面改回手写的 `cargo publish` 循环，那样重跑会在「已存在」上报错。
 #
-# 顺序是**硬约束**（`ai-docs/decisions/adr-0009-crates-io-publishing.md`）：
-#   protocol → core → ipc-types → ipc → service → update → peon-burrow
+# 发布顺序**不在这里维护**：harbor 从依赖图做拓扑排序（`cargo harbor plan` 可预览）。
+# 手维护的副本本身就是 bug 源 —— 见 `ai-docs/decisions/adr-0009-crates-io-publishing.md`
+# 与 harbor 的 `src/lib.rs` 开头（那里记着同一个坑）。
 #
 # ⚠️ 除注释外**不要写中文**（含 job/step 的 name 与 echo 文案）。
 name: release
@@ -24,7 +26,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  CRATES: peon-burrow-protocol peon-burrow-core peon-burrow-ipc-types peon-burrow-ipc peon-burrow-service peon-burrow-update peon-burrow
+  # 钉**精确版本**：harbor 的 CLI 语义一变，发版会在最后一刻红，而那时前面的包已经发出去了
+  HARBOR_VERSION: "0.1.4"
 
 jobs:
   checks:
@@ -45,15 +48,20 @@ jobs:
           version="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
           echo "tag=$tag workspace=$version"
           [ "$tag" = "$version" ] || { echo "::error::tag does not match the Cargo.toml version"; exit 1; }
-      - name: dependency order self-check
+      - uses: cargo-bins/cargo-binstall@v1.25.1
+      - name: install harbor
+        # GITHUB_TOKEN 只给 binstall 用（它自己去查 release 资产；不带 token 会撞 API 限流）
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo binstall harbor --version "$HARBOR_VERSION" --no-confirm --disable-strategies compile
+      - name: the release plan must be computable
         shell: bash
         run: |
           set -euo pipefail
-          # 每个包**只能**依赖它前面已经发过的包（或者不依赖本仓库的包）
-          for crate in $CRATES; do
-            echo "--- $crate"
-            cargo tree -p "$crate" --depth 1 | grep 'peon-burrow' || true
-          done
+          # 依赖环、`publish = false` 与依赖的冲突、写错的 members 都会在这里直接报错。
+          # 「依赖必须排在前面」由 harbor 从依赖图算，不再靠人肉列表，也不再靠
+          # `cargo tree | grep` 那种只看不判的自查。
+          cargo harbor plan
 
   assets:
     name: assets and release
@@ -64,43 +72,60 @@ jobs:
       contents: write
 
   crates-dry-run:
-    name: cargo publish dry run
+    name: release plan dry run
     needs: [checks, verify]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - shell: bash
-        run: |
-          set -euo pipefail
-          for crate in $CRATES; do
-            echo "=== dry-run $crate"
-            cargo publish -p "$crate" --dry-run --locked
-          done
+      - uses: cargo-bins/cargo-binstall@v1.25.1
+      - name: install harbor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo binstall harbor --version "$HARBOR_VERSION" --no-confirm --disable-strategies compile
+      - name: plan the release (uploads nothing)
+        # harbor 的 dry-run **不调用 cargo**，只打印计划。
+        run: cargo harbor publish --dry-run
+      - name: every crate can be packaged
+        # ⚠️ 这里只能用 `--list`。`cargo publish --dry-run` / `cargo package`（带 verify）都要拿
+        # **打包后的** manifest 去 live registry 解析内部依赖，而这些版本还没上传 ——
+        # 第一个包（无内部依赖）能过、第二个起必然红（真机踩过：
+        # `failed to select a version for the requirement peon-burrow-protocol = "^0.0.5"`）。
+        # 真正的编译校验由 `cargo publish` 在依赖已入索引之后自己做。
+        #
+        # ⚠️ 这个 job 也**不挂 rust-cache**：缓存过 `target/package` 会在清理时报错。
+        run: cargo package --list --workspace --locked
 
   crates-publish:
     name: publish to crates.io
     needs: [crates-dry-run]
     runs-on: ubuntu-latest
+    # ⚠️ ADR-0009 § 2 的作者约定是「不加 `environment:`」，这里保留是因为本仓库的
+    #    `CARGO_REGISTRY_TOKEN` 可能定义在 `crates-io` 这个 environment 作用域里 ——
+    #    去掉它会让 token 变成空值（harbor 会明确报 `CARGO_REGISTRY_TOKEN is set but empty`）。
+    #    确认 token 是仓库级 secret 之后，可以按 ADR 去掉这一行。
     environment: crates-io
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: cargo-bins/cargo-binstall@v1.25.1
+      - name: install harbor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo binstall harbor --version "$HARBOR_VERSION" --no-confirm --disable-strategies compile
+      - name: preflight (tag, token, plan)
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo harbor check --plan "$GITHUB_REF_NAME"
       - name: publish in dependency order
         shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          for crate in $CRATES; do
-            echo "=== publishing $crate"
-            # 索引有延迟：失败就等一会儿重试，而不是直接红
-            for attempt in 1 2 3 4 5; do
-              if cargo publish -p "$crate" --locked; then break; fi
-              echo "attempt $attempt failed, retrying in 30s (the registry index is usually just lagging)"
-              sleep 30
-              [ "$attempt" -lt 5 ] || { echo "::error::failed to publish $crate"; exit 1; }
-            done
-          done
+          # harbor 的失败分类（`src/runner.rs` 的 `Outcome::classify`），比手写循环严格：
+          #   already uploaded / already exists -> 成功（重跑续发；crates.io 不允许重传）
+          #   failed to select a version         -> 唯一值得等的（索引滞后；默认 10s x 60 次封顶）
+          #   其它                                -> 立刻失败（坏 token 不再被当成「索引延迟」白等五分钟）
+          cargo harbor publish

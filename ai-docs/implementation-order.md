@@ -161,8 +161,8 @@ peon-burrow-protocol
 ```
 
 - 用 `harbor` 编排（它会 preflight 依赖顺序）：`cargo harbor check --plan "$GITHUB_REF_NAME"` → `cargo harbor publish`；
-- 每次发版先本地 `cargo publish --dry-run -p <crate> --locked` 过一遍；
-- 首次发布要**按上面顺序手动发一遍**（registry 上还没有依赖版本时，后面的 crate 无法验证）；
+- 每次发版先 `cargo harbor publish --dry-run` + `cargo package --list --workspace --locked` 过一遍（**别用** `cargo publish --dry-run`：第一个包之后必然红，理由见 `adr-0009 § 4`）；
+- 首次发布同样交给 `harbor`：依赖还没进索引时它等（`failed to select a version` 是唯一会重试的失败），不需要手动按序发；
 - `testkit` 与 `examples` **不发**（`publish = false`）。
 
 ---

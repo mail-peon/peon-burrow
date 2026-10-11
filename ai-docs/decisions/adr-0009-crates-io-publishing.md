@@ -37,8 +37,9 @@
 protocol → core → ipc-types → ipc → service → update → peon-burrow
 ```
 
-**首次发布必须按这个顺序手动走一遍**（registry 上还没有依赖版本时，后面的 crate 无法通过校验）。
-之后交给 `harbor` 编排（它的 preflight 会算顺序、也会在「版本已在 registry 上」时视为完成 —— 重跑安全）。
+**首次发布也交给 `harbor`**：它按依赖序发，而 `failed to select a version`（= 依赖还没进索引）
+是它**唯一**会等待重试的失败 —— 所以「registry 上还没有依赖版本」这件事不需要人守着。
+它同时把「版本已在 registry 上」视为完成，重跑（部分发布之后续发）是安全的。
 
 ```yaml
 - uses: cargo-bins/cargo-binstall@v1.25.1
@@ -72,7 +73,19 @@ protocol → core → ipc-types → ipc → service → update → peon-burrow
 | 闸 | 工具 | 时机 |
 | --- | --- | --- |
 | API 兼容性 | `cargo-semver-checks`（对稳定层 6 个 crate） | CI 的 `Checks` job |
-| 打包可发布性 | `cargo publish --dry-run -p <crate> --locked` | `release.yaml` 的 `assets` 之后、`publish` 之前 |
+| 打包可发布性 | `cargo harbor publish --dry-run`（计划，**不碰 registry**）+ `cargo package --list --workspace --locked`（打包清单） | `release.yaml` 的 `assets` 之后、`publish` 之前 |
+
+⚠️ 这里**不能**用 `cargo publish --dry-run -p <crate> --locked`（初版就是这么写的，v0.0.5 真机踩到）：
+它会拿**打包后的** manifest 去 live registry 解析内部依赖，而当前版本还没上传 ——
+于是第一个包（无内部依赖）能过、**第二个起必然红**：
+
+```
+failed to select a version for the requirement `peon-burrow-protocol = "^0.0.5"`
+candidate versions found which didn't match: 0.0.0
+```
+
+`cargo package`（带 verify，`--no-verify` 也一样）有同样的问题；只有 `--list` 不解析 registry。
+真正的编译校验由 `cargo publish` 自己在依赖已入索引之后做。
 
 `cargo-semver-checks` 把「破坏性改动必须 minor/major」从**纪律**变成**门禁** ——
 crates.io 上版本不可复用、yank 不可撤销，所以这条不能靠自觉。

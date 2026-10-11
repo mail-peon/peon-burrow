@@ -134,5 +134,5 @@ GitHub Release 标题建议写成 `v0.2.0`（仓库名已经说明了归属）�
 6. 在**干净机器**上装一次（用户级），重启，收一封信；
 7. `update apply` 演练一次（用 `v0.x.y-1` 的 beta 清单）；
 8. 补齐 § 4 的兼容性矩阵行（若本次影响桌面端）；
-9. `cargo publish --dry-run` 过全部 7 个 crate（顺序见 [`adr-0009`](./decisions/adr-0009-crates-io-publishing.md)）；
+9. `cargo harbor publish --dry-run` 预览发布计划（不碰 registry；顺序由 [`adr-0009`](./decisions/adr-0009-crates-io-publishing.md) 从依赖图算出），再 `cargo package --list --workspace --locked` 过一遍打包清单（**别用** `cargo publish --dry-run`：第二个包起必然红，见 `adr-0009 § 4`）；
 10. `cargo-semver-checks` 对稳定层 6 个 crate 通过。

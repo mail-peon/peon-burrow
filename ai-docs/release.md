@@ -90,7 +90,7 @@ cargo harbor publish                             # 已发布过的版本视为�
 | 8 | 兼容性矩阵（[`05 § 4`](./05-release-and-versioning.md)）是否需要加行 | 桌面端要对齐 core |
 | 9 | `mail-peon` 那边的默认端口是否已切换（P5 之后） | 决定文档里写哪个地址 |
 | 10 | `cargo-semver-checks` 对稳定层 6 个 crate 全绿 | 「破坏性改动必须 minor/major」不能靠自觉 |
-| 11 | 每个待发布 crate 的 `cargo publish --dry-run -p <crate> --locked` 通过 | crates.io 版本不可复用，发错了只能再发一版 |
+| 11 | `cargo harbor publish --dry-run`（计划）与 `cargo package --list --workspace --locked`（打包清单）通过；**不用** `cargo publish --dry-run`（第二个包起必然红，见 `adr-0009 § 4`） | crates.io 版本不可复用，发错了只能再发一版 |
 | 12 | 每个 crate 都有自己的 `README.md`（crates.io 会渲染它） | 只靠仓库根 README 会让 crate 页面很空 |
 
 端口复核一键脚本（Windows）：

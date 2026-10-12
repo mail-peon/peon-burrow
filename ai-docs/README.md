@@ -89,17 +89,21 @@
 
 ## 当前状态
 
-> 最近更新：**文档骨架完成，代码未开始**。
+> 最近更新：**代码完成到 S13**（299 个测试通过：6 条 IMAP watch 端到端 + 11 条 tunnel 端到端 + 56 条 service + 65 条 update）。
+> **S14 发版与真机验收待办** —— 首次 crates.io 发布、三平台真机演练、签名算法拍板。
 
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| P0 | 文档（本目录 + `peon-hall/ai-docs`） | 🟡 进行中 |
-| P1 | 中继内核（协议对齐 TS 版）+ 回归测试 20 条 | ⬜ |
-| P2 | 配置 / 日志 / `doctor` / 服务宿主 / 控制面 | ⬜ |
-| P3 | 自更新 | ⬜ |
-| P4 | CI 三平台发版 + `latest.json` | ⬜ |
-| P5 | 与 `mail-peon` 扩展联动（默认端口、文案）+ 真邮箱验收 | ⬜ |
-| P6 | 删掉 TS 实现（**必须在扩展切换默认端口之后**） | ⬜ |
+| S0–S1 | workspace 骨架 + `protocol` 零 IO crate | ✅ |
+| S2–S3 | `core` error / policy / transport / dispatch / tunnel / state + 端到端 | ✅ |
+| S4 | `imap-watch` feature：watch 状态机 + line_buffer + 6 条 e2e | ✅ |
+| S5 | `ipc-types` + `ipc`（控制面传输，命名管道 / UDS / TCP 退路） | ✅ |
+| S6 | `service` 三平台 + `Runner`/`Plan`/`Mutations` 执行缝 + 56 条测试 | ✅ |
+| S7 | `update`（自写 HTTPS GET + sha256 + 签名注入点 + 65 条测试） | ✅ |
+| S8–S11 | 产品层（cli / config / paths / logging / doctor / control / run / update / service） | ✅ |
+| S12 | examples + testkit（不发布） | ✅ |
+| S13 | CI 三平台矩阵 + `cargo-semver-checks` + 文档守卫 | ✅ |
+| **S14** | **真机验收（Windows UAC / 重启 / 崩溃恢复 / 真邮箱） + 首次 crates.io 发布 + 签名算法拍板** | ⬜ |
 
 详见 [`03-roadmap.md`](./03-roadmap.md)。
 - [`decisions/adr-0010-implementation-revisions.md`](./decisions/adr-0010-implementation-revisions.md) —— **落地时的偏差总表**（优先于被点名段落）

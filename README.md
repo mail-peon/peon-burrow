@@ -64,16 +64,17 @@
 
 ## 当前状态
 
-> **文档先行阶段：代码尚未开始写。**
+> **实现已完成到 S13**（299 个测试通过：6 条 IMAP watch 端到端 + 11 条 tunnel 端到端 + 56 条 service + 65 条 update）。
+> **S14 发版与真机验收待办** —— 首次 crates.io 发布、三平台真机演练、签名算法拍板。
 
 | 项 | 状态 |
 | --- | --- |
 | TS 中继逻辑逐条梳理（60+ 条行为对照） | ✅ [`ai-docs/04-parity-node-to-rust.md`](./ai-docs/04-parity-node-to-rust.md) |
 | 线上协议契约冻结 | ✅ [`ai-docs/design/wire-protocol.md`](./ai-docs/design/wire-protocol.md) |
 | 架构 / 选型 / 端口 / 服务模型 / 自更新 / 发版 | ✅ [`ai-docs/`](./ai-docs/README.md) |
-| 稳定性分层与发布策略（crates.io 7 个 crate） | ✅ [`STABILITY.md`](./STABILITY.md) · [`adr-0009`](./ai-docs/decisions/adr-0009-crates-io-publishing.md) |
-| 代码 | ⬜ |
-| CI（三平台发版） | ⬜ |
+| 稳定性分层与发布策略（crates.io 6 个稳定 crate + 1 个产品 crate） | ✅ [`STABILITY.md`](./STABILITY.md) · [`adr-0009`](./ai-docs/decisions/adr-0009-crates-io-publishing.md) |
+| 代码（9 个 crate 按依赖序：protocol → core → ipc-types → ipc → service → update → peon-burrow） | ✅ 实现到 S13 |
+| CI（三平台发版矩阵） | ✅ 已就绪，crx/crates.io 首次发布待 S14 |
 
 ---
 

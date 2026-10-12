@@ -190,7 +190,17 @@ jobs:
   semver:
     name: semver checks (stable layers)
     runs-on: ubuntu-latest
-    continue-on-error: true # 首次发版前没有基线，允许失败；有基线后应当收紧
+    # ⚠️ 首次发版前（v0.1.0 还没上 crates.io）—— 没有可对照的基线，semver-checks
+    # 在「找不到上一次 release」时会报错；`|| true` 把这种状态吞掉，让 CI 还能过。
+    #
+    # **v0.1.0 一旦真正发布**，这条 `|| true` 与这里的 continue-on-error 必须**同时**收紧：
+    # - 删 `continue-on-error: true`
+    # - 把 `|| true` 换成 `set -e`（脚本里其它命令就 fail 了）
+    # 否则 semver-checks 在 v0.2.0 引入 break 改动时不会被 CI 拦下来 —— 那正是
+    # `cargo-semver-checks` 这道闸存在的原因（[`adr-0009`](../../ai-docs/decisions/adr-0009-crates-io-publishing.md)）。
+    #
+    # 跟 [`ai-docs/release.md`](../../ai-docs/release.md) 的「发版 checklist」挂钩。
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

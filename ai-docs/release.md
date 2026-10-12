@@ -89,7 +89,7 @@ cargo harbor publish                             # 已发布过的版本视为�
 | 7 | Windows 归档里的 exe 双击能跑 `version` | 冒烟（架构/依赖问题在这一步暴露） |
 | 8 | 兼容性矩阵（[`05 § 4`](./05-release-and-versioning.md)）是否需要加行 | 桌面端要对齐 core |
 | 9 | `mail-peon` 那边的默认端口是否已切换（P5 之后） | 决定文档里写哪个地址 |
-| 10 | `cargo-semver-checks` 对稳定层 6 个 crate 全绿 | 「破坏性改动必须 minor/major」不能靠自觉 |
+| 10 | `cargo-semver-checks` 对稳定层 6 个 crate 全绿 | 「破坏性改动必须 minor/major」不能靠自觉。**首发当日**必须把 `.github/workflows/ci.yaml` 里 `semver` job 的 `continue-on-error: true` 与 `|| true` 一起收紧 —— 见 `ci.yaml:190-198` 的注释 |
 | 11 | `cargo harbor publish --dry-run`（计划）与 `cargo package --list --workspace --locked`（打包清单）通过；**不用** `cargo publish --dry-run`（第二个包起必然红，见 `adr-0009 § 4`） | crates.io 版本不可复用，发错了只能再发一版 |
 | 12 | 每个 crate 都有自己的 `README.md`（crates.io 会渲染它） | 只靠仓库根 README 会让 crate 页面很空 |
 

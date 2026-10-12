@@ -25,7 +25,6 @@ if (Test-Path $archivePath) { Remove-Item $archivePath -Force }
 
 # 归档里放裸二进制：自更新解出来就能替换自己
 Compress-Archive -Path $binary -DestinationPath $archivePath -Force
-Copy-Item $binary (Join-Path $dist "burrow-$Target.exe") -Force
 
 $hash = (Get-FileHash $archivePath -Algorithm SHA256).Hash.ToLower()
 # 与 sha256sum 的输出格式保持一致，脚本两侧都能校验

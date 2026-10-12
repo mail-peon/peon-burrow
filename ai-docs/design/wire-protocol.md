@@ -179,17 +179,18 @@ greeting ──(未标记的 * OK / * PREAUTH)──▶ login ──(A000n OK)�
 
 ## 6. 与 `mail-peon` 的联动清单（P6，跨仓库）
 
-| # | 位置 | 现状 | 要改成 |
-| --- | --- | --- | --- |
-| L1 | `src/adapters/mail/providers/imap/index.ts:62-63` | `default` / `placeholder` = `ws://127.0.0.1:8787/` | 新默认端口（见 [`port-and-discovery.md`](./port-and-discovery.md)） |
-| L2 | `src/options/pages/AccountsPage.vue:152,156` | 文案写 `pnpm relay` + `ws://127.0.0.1:8787/` | 改为「安装 peon-hall后自动可用」+ 新端口 |
-| L3 | `src/adapters/mail/transport/relay.ts:56-59` | 错误文案「当前环境没有裸 TCP…」 | 与 L2 统一（产品名统一为「peon-hall / Relay」） |
-| L4 | `src/adapters/mail/transport/watch.ts:78` | 注释里的示例地址 | 新端口 |
-| L5 | `ai-docs/decisions/relay-deployment.md § 2.3` | 标着「待实现」的目标表 | 本文档落地后逐条勾掉 |
-| L6 | `src/adapters/mail/__tests__/watch-client.spec.ts:35,63,183` | 测试里的 `8787` | 改端口（只是字面量，不影响断言） |
+| # | 位置 | 现状 | 要改成 | 状态 |
+| --- | --- | --- | --- | --- |
+| L1 | `src/adapters/mail/providers/imap/index.ts:62-63` | `default` / `placeholder` = `ws://127.0.0.1:41316/` | 已对齐新端口 | ✅ |
+| L2 | `src/options/pages/AccountsPage.vue:293,297` | 文案「推荐安装 peon-hall 自动启动」+ `ws://127.0.0.1:41316/` | 已对齐新端口 + 推荐 peon-hall | ✅ |
+| L3 | `src/adapters/mail/transport/relay.ts:56-59` | 错误文案「当前环境没有裸 TCP…」 | 与 L2 统一（产品名统一为「peon-hall / Relay」） | ⏳ 待 L2 全面铺开时改 |
+| L4 | `src/adapters/mail/transport/watch.ts:80` | 注释里的示例地址 | 新端口 | ✅ |
+| L5 | `ai-docs/decisions/relay-deployment.md § 2.3` | 标着「待实现」的目标表 | 本文档落地后逐条勾掉 | ✅ 已勾掉现状行（`41316` / `peon-burrow` 对齐） |
+| L6 | `src/adapters/mail/__tests__/watch-client.spec.ts:35,63,183` | 测试里的 `41316` | 改端口（只是字面量，不影响断言） | ✅ |
+| L7 | `docs/privacy-policy.md:49,144` | 用户可见文档里的 `41316` | 已对齐新端口 | ✅ |
+| L8 | `scripts/imap-relay.ts` 默认端口 `41316` | TS 版中继自身的默认值 | 与 burrow 对齐 | ✅ |
 
-> ⚠️ 在 L1 落地之前，用户必须**手填**新端口地址。所以 Rust 版首版发出去时，
-> 安装器要在界面上**显式给出这个地址**（可一键复制），不能指望用户猜。
+> ⚠ 在 L1 落地之前，用户必须**手填**新端口地址。L1 现在已落地；但扩展默认地址仍是**用户可改的**（`providers/imap/index.ts` 的 `default`），所以「真实生产里用户拿到哪个端口」由 peon-hall 的安装路径决定。
 
 ---
 

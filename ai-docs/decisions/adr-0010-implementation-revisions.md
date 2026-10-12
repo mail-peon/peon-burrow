@@ -177,8 +177,11 @@
   `service-lifecycle.md` 加 § 2.1 与 § 3 的实现状态表；
   `02-tech-stack.md § 1` 的 `windows-service` 一行收窄为「只用服务入口」。
 - 待办：`service install` 的自检失败目前**不回滚**（只报错，理由见 `service-lifecycle.md § 3`）、
-  日志按大小滚动（`log_max_mib` / `log_keep_files` 还没接上）、
   Linux/macOS 的系统级路径同理由现在起也会显式写进 unit / plist（本机无法验证）。
+- ✅ 已落地（2026-10）：日志按大小滚动 `log_max_mib` / `log_keep_files` 已接上 —— `crates/peon-burrow/src/run.rs:96-101`
+  把 `LogFile { path, max_mib, keep }` 传给 `init_logging`，`logging.rs` 的 `RotatingWriter` 自己做按大小滚动
+  （`tracing_appender` 只支持按时间滚，故自写薄封装 —— `02-tech-stack.md § 5`）。4 条单测覆盖：触发滚动 /
+  超大单条不循环 / `keep=1` 截断 / MiB→字节换算。
 
 ### 16.1 补一条「停止」的幂等判据
 

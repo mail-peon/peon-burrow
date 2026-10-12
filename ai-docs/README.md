@@ -107,3 +107,4 @@
 
 详见 [`03-roadmap.md`](./03-roadmap.md)。
 - [`decisions/adr-0010-implementation-revisions.md`](./decisions/adr-0010-implementation-revisions.md) —— **落地时的偏差总表**（优先于被点名段落）
+- [`decisions/adr-0011-signature-rollout.md`](./decisions/adr-0011-signature-rollout.md) —— 签名算法选 zipsign + 首发降级路径（v0.1.0 不签名，v0.2.0 起签）

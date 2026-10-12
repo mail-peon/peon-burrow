@@ -118,15 +118,18 @@
 
 ## P5 · 桌面端 + 扩展联动
 
-| # | 任务 | 仓库 |
-| --- | --- | --- |
-| 5.1 | Tauri 骨架 + 状态卡片（四种组合）+ 五个操作 | `peon-hall` |
-| 5.2 | 控制面客户端（`peon-burrow-ipc`：发布前 git 依赖 / 发布后版本依赖）+ `doctor` 展示 | `peon-hall` |
-| 5.3 | sidecar 打包（`core-version.txt` → 下载 → `externalBin`） | `peon-hall` |
-| 5.4 | 提权辅助（安装/卸载系统服务、自启开关） | `peon-hall` + `peon-burrow` |
-| 5.5 | 桌面端 CI：三平台安装包 | `peon-hall` |
-| 5.6 | 扩展默认端口 → `41316`、文案更新、`watch-client.spec.ts` 字面量 | `mail-peon` |
-| 5.7 | 端到端：装安装包 → 点「安装服务」→ 扩展里**什么都不填**就能收信 | 三仓库 |
+| # | 任务 | 仓库 | 状态 |
+| --- | --- | --- | --- |
+| 5.1 | Tauri 骨架 + 状态卡片（四种组合）+ 五个操作 | `peon-hall` | ✅ |
+| 5.2 | 控制面客户端（`peon-burrow-ipc`：发布前 git 依赖 / 发布后版本依赖）+ `doctor` 展示 | `peon-hall` | ✅ |
+| 5.3 | sidecar 打包（`core-version.txt` → 下载 → `externalBin`） | `peon-hall` | ✅ |
+| 5.4 | 提权辅助（安装/卸载系统服务、自启开关） | `peon-hall` + `peon-burrow` | ✅ |
+| 5.5 | 桌面端 CI：三平台安装包 | `peon-hall` | ⬜ |
+| 5.6 | 扩展默认端口 → `41316`、文案更新、`watch-client.spec.ts` 字面量 | `mail-peon` | ✅ |
+| 5.7 | 端到端：装安装包 → 点「安装服务」→ 扩展里**什么都不填**就能收信 | 三仓库 | ⬜ |
+| 5.8 | `peon-hall` doctor 加扩展连通性 TCP 探测（与 burrow 侧 doctor 互补） | `peon-hall` | ✅ |
+| 5.9 | mail-peon `watch.ts` 显式消费 `state:"error"`（可观测性） | `mail-peon` | ✅ |
+| 5.10 | burrow 推 `state:"failed"` 携带 `fatal:true` 字段（与扩展期望对齐） | `peon-burrow` | ✅ |
 
 ---
 
@@ -143,15 +146,15 @@
 
 ## 待决（P0 收尾要拍板的）
 
-| # | 待决 | 倾向 | 影响 |
-| --- | --- | --- | --- |
-| Q1 | 签名方案：minisign vs zipsign | zipsign（与 `self_update` 集成最顺） | `peon-burrow-update`、CI |
-| Q2 | 提权辅助形态：第二份 manifest 构建 vs 独立小工具 | 独立小工具 | desktop 产物数 |
-| Q3 | `RELAY_TRACE` 在服务态是否开放 + 怎么开 | 控制面临时开（上限 300s，二次确认） | 控制面命令集 |
-| Q4 | arm64（Windows/Linux）首版是否发布 | 若 runner 可用则发，否则只发 4 个 target | CI 矩阵、README |
-| Q5 | Windows 用户级自启的 `Hidden` XML 最简写法 | 落地时验证；不可行则接受一次黑框并记入已知问题 | `peon-burrow-service` |
-| Q6 | `max_connections` 默认值 | 32 | `peon-burrow-core` |
-| Q7 | 服务账号（Windows `LocalSystem` vs `LocalService`） | `LocalSystem`（要写自己的目录） | `peon-burrow-service` |
+| # | 待决 | 倾向 / 决定 | 影响 | 状态 |
+| --- | --- | --- | --- | --- |
+| Q1 | 签名方案：minisign vs zipsign | **zipsign**（与 `self_update` 集成最顺 + 自签密钥生命周期简单） | `peon-burrow-update`、CI | ✅ 已采纳（[`adr-0011`](./decisions/adr-0011-signature-rollout.md)） |
+| Q2 | 提权辅助形态：第二份 manifest 构建 vs 独立小工具 | 独立小工具 | desktop 产物数 | ✅ 已采纳 |
+| Q3 | `RELAY_TRACE` 在服务态是否开放 + 怎么开 | 控制面临时开（上限 300s，二次确认） | 控制面命令集 | ✅ 已采纳 |
+| Q4 | arm64（Windows/Linux）首版是否发布 | 若 runner 可用则发，否则只发 4 个 target | CI 矩阵、README | ⬜ |
+| Q5 | Windows 用户级自启的 `Hidden` XML 最简写法 | 落地时验证；不可行则接受一次黑框并记入已知问题 | `peon-burrow-service` | ✅ 已采纳 |
+| Q6 | `max_connections` 默认值 | 32 | `peon-burrow-core` | ✅ 已采纳 |
+| Q7 | 服务账号（Windows `LocalSystem` vs `LocalService`） | `LocalSystem`（要写自己的目录） | `peon-burrow-service` | ✅ 已采纳 |
 ---
 
 ## 落地状态（2026-10-09）

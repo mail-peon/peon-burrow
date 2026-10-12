@@ -196,7 +196,7 @@ impl ClientMessage {
                 escaped(error)
             ),
             Self::Failed { error } => format!(
-                r#"{{"type":"state","state":"failed","error":{}}}"#,
+                r#"{{"type":"state","state":"failed","error":{},"fatal":true}}"#,
                 escaped(error)
             ),
         }
@@ -356,7 +356,7 @@ mod tests {
                 error: "登录失败".to_owned()
             }
             .to_json(),
-            r#"{"type":"state","state":"failed","error":"登录失败"}"#
+            r#"{"type":"state","state":"failed","error":"登录失败","fatal":true}"#
         );
     }
 

@@ -113,7 +113,7 @@ ws://<relayHost>:<relayPort>/<path>[?query]
 | `user` / `pass` | 必须非空 | 缺 → `watch 请求缺少 user / pass` |
 | `token` | 与 `RELAY_TOKEN` 比对 | |
 
-校验失败 → 关闭码 `1011`，并**先**推一条 `{"state":"failed","error":"…"}`。
+校验失败 → 关闭码 `1011`，并**先**推一条 `{"state":"failed","error":"…","fatal":true}`。
 
 ### 4.2 响应（中继 → 客户端，**文本帧** JSON）
 
@@ -123,7 +123,7 @@ ws://<relayHost>:<relayPort>/<path>[?query]
 | `{"type":"mail","accountId":"…","exists":N}` | 服务器报的 `EXISTS` **比基准大**时。**不含邮件内容** |
 | `{"type":"state","state":"reconnecting","retryInMs":N}` | 连接断了，正在退避重连。退避阶梯 `[2,5,15,30,60,120,300]` 秒 |
 | `{"type":"state","state":"error","error":"…"}` | 本轮出错但还会重试（可观测用，扩展当前忽略） |
-| `{"type":"state","state":"failed","error":"…"}` | **重试无用**（密码错、白名单拒绝）。中继**停止重连**，扩展也**不要重连**，提示用户改配置 |
+| `{"type":"state","state":"failed","error":"…","fatal":true}` | **重试无用**（密码错、白名单拒绝）。中继**停止重连**，扩展也**不要重连**，提示用户改配置 |
 
 ⚠️ 扩展侧对帧形态是宽容的（`string` / `ArrayBuffer` / `ArrayBufferView` 都接），
 但**中继必须继续发文本帧**：TS 版曾因扩展侧误设 `binaryType='arraybuffer'`

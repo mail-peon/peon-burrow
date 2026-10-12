@@ -90,8 +90,8 @@ GitHub Release 标题建议写成 `v0.2.0`（仓库名已经说明了归属）�
 
 | 连接点 | 现状 | 计划 |
 | --- | --- | --- |
-| 中继地址默认值 | 扩展里写死 `ws://127.0.0.1:8787/`（`providers/imap/index.ts:62`） | P5 改成 `41316`（[`adr-0004`](./decisions/adr-0004-port-default.md)） |
-| 协议版本协商 | **没有**版本字段 | `__watch` 请求加 `protocol`（缺省 = 1），`watching` 回包里带 `protocol` / `relayVersion`（[`design/wire-protocol.md § 5`](./design/wire-protocol.md)） |
+| 中继地址默认值 | 扩展里写死 `ws://127.0.0.1:41316/`（`providers/imap/index.ts:62`） | ✅ 已对齐（[`adr-0004`](./decisions/adr-0004-port-default.md) 在 P5 完成） |
+| 协议版本协商 | **没有**版本字段 | `__watch` 请求加 `protocol`（缺省 = 1），`watching` 回包里带 `protocol` / `relayVersion`（[`design/wire-protocol.md § 5`](./design/wire-protocol.md)）— P5 后排期 |
 
 > 在协商落地之前，「扩展更新了但 exe 没更新」只能靠用户自己发现（表现为行为不一致）。
 > 这是 P5 之后要补的一块。

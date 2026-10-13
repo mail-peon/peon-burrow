@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "peon-burrow"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "directories",
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "peon-burrow-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -698,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "peon-burrow-examples"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "peon-burrow-core",
  "peon-burrow-ipc-types",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "peon-burrow-ipc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "peon-burrow-ipc-types",
  "serde",
@@ -723,7 +723,7 @@ dependencies = [
 
 [[package]]
 name = "peon-burrow-ipc-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -731,7 +731,7 @@ dependencies = [
 
 [[package]]
 name = "peon-burrow-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "peon-burrow-service"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "peon-burrow-ipc-types",
  "sysinfo",
@@ -750,7 +750,7 @@ dependencies = [
 
 [[package]]
 name = "peon-burrow-testkit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "peon-burrow-protocol",
  "rcgen",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "peon-burrow-update"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hex",
  "rustls",

@@ -348,3 +348,8 @@ test -z "$(grep -E '^peon-burrow-[a-z-]+ = \{ version = "' Cargo.toml | grep -v 
 | 服务层 | `crates/peon-burrow-service/tests/` | 只读路径（`status` / `probe_port`） |
 | 自更新 | `crates/peon-burrow-update/tests/` | 本地 HTTP server 伪造清单与坏输入 |
 | 端到端 | 手动 checklist | 真邮箱、真服务、真更新（[`testing.md § 5`](./testing.md)） |
+## 文件内部职责
+
+- `peon-burrow-service/src/{windows,linux,macos}.rs` 保留原公开路径和平台约定。各自子目录保存宿主、命令或配置生成、状态解析与测试；Windows 的用户任务和系统服务分别实现。
+- `peon-burrow/src/run.rs` 负责运行时入口和命令分发，`run/` 分离中继生命周期、服务命令、控制命令、输出与 token 生成。
+- `peon-burrow/src/config.rs` 保留配置加载入口；`config/` 分离模型、来源解析、合并与校验，默认值及覆盖优先级不变。
